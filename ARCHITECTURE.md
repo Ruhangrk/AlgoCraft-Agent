@@ -385,7 +385,7 @@ Curated agent-facing slices of the AlgoCraft C++ surface (not a dump of `AlgoCra
 | Selective fetch | From the index table, load **at most 2–3** other doc paths per turn. |
 | Catalog folders | `strategies/`, `indicators/`, `routing/` each have their own `INDEX.md` (path + one-line); drill into one body file after picking from that folder index. |
 | Codegen default | Prefer `codegen_shape.md` + `strategy_interface.md`; add sizing/clock/indicators as needed. |
-| Loader | Implement `docs/loader.py` (or in `llm/prompts.py`): parse index → resolve paths → read files. Optional LLM tool `fetch_doc(path)`. |
+| Loader | Implement `app/docs_loader.py`: parse index → resolve paths → read files. Optional LLM tool `fetch_doc(path)`. |
 | Source of truth | Human architecture stays in AlgoCraft `Notes/`; keep `docs/cpp/` concise and sync when Strategy/API/registry lists change. |
 
 ### Package manager
@@ -445,7 +445,7 @@ Frontend never sees keys. Catalog API never returns keys. Cursor/agents must not
 ```yaml
 # config/llm_catalog.yaml
 default_provider: groq
-default_model: llama-3.1-8b-instant
+default_model: openai/gpt-oss-20b
 default_temperature: 0.2
 temperature_min: 0.0
 temperature_max: 2.0
@@ -466,8 +466,10 @@ providers:
     # no base_url — uses Google GenAI SDK
     env_key: GEMINI_API_KEY
     models:
-      - id: gemini-2.0-flash
-        label: Gemini 2.0 Flash
+      - id: gemini-3.8-flash
+        label: Gemini 3.8 Flash
+      - id: gemini-2.5-flash
+        label: Gemini 2.5 Flash
       - id: gemini-2.5-pro
         label: Gemini 2.5 Pro
 
@@ -488,10 +490,12 @@ providers:
     base_url: https://api.groq.com/openai/v1
     env_key: GROQ_API_KEY
     models:
-      - id: llama-3.3-70b-versatile
-        label: Llama 3.3 70B
-      - id: llama-3.1-8b-instant
-        label: Llama 3.1 8B Instant
+      - id: openai/gpt-oss-20b
+        label: GPT-OSS 20B
+      - id: openai/gpt-oss-120b
+        label: GPT-OSS 120B
+      - id: qwen/qwen3.8-27b
+        label: Qwen3.8 27B
 ```
 
 Rules:
@@ -549,7 +553,7 @@ AGENT_SECRETS_FILE=/absolute/path/to/llm.secrets.env
 # Optional defaults if session omits provider/model (must exist in llm_catalog.yaml)
 # Prefer groq/gemini; DeepSeek last.
 # AGENT_DEFAULT_LLM_PROVIDER=groq
-# AGENT_DEFAULT_LLM_MODEL=llama-3.1-8b-instant
+# AGENT_DEFAULT_LLM_MODEL=openai/gpt-oss-20b
 
 AGENT_MAX_ITERATIONS=3
 AGENT_MAX_COMPILE_ATTEMPTS=5
@@ -566,7 +570,7 @@ AGENT_COMPILE_TIMEOUT_SEC=180
 ```json
 {
   "default_provider": "groq",
-  "default_model": "llama-3.1-8b-instant",
+  "default_model": "openai/gpt-oss-20b",
   "default_temperature": 0.2,
   "temperature_min": 0.0,
   "temperature_max": 2.0,
@@ -577,7 +581,7 @@ AGENT_COMPILE_TIMEOUT_SEC=180
       "available": true,
       "status": "ok",
       "models": [
-        {"id": "llama-3.1-8b-instant", "label": "Llama 3.1 8B Instant", "reachable": true}
+        {"id": "openai/gpt-oss-20b", "label": "GPT-OSS 20B", "reachable": true}
       ]
     }
   ]
@@ -618,7 +622,7 @@ When an LLM call returns **429**, quota, or clear “rate limit / resource exhau
 {
   "code": "llm_rate_limited",
   "provider": "groq",
-  "model": "llama-3.1-8b-instant",
+  "model": "openai/gpt-oss-20b",
   "message": "This provider hit its rate/quota limit. Switch provider or model in the dropdowns and try again."
 }
 ```
@@ -718,11 +722,11 @@ User: Backtest hammer_reversal on ONGC for last 5 sessions with 1L
 - [x] 5. `SessionStore` + `POST /v1/sessions` (+ provider/model) + `PATCH .../llm`  
 - [x] 5b. `app/llm/discover.py` (list-models ∩ YAML) + rate-limit error mapping (§8.7–8.8)  
 - [x] 6. LangGraph Phase A nodes + mock tests (inject `configurable["llm"]`) — **no live LLM in CI**  
-- [ ] 7. Wire real backtest + evaluate  
-- [ ] 8. Wire hist `start_run` + events  
-- [ ] 9. `POST /v1/chat` + SSE stream  
-- [ ] 10. Phase B `design_code` + `compile_loop`  
-- [ ] 11. Phase C confirm + promote + activate  
+- [x] 7. Wire real backtest + evaluate  
+- [x] 8. Wire hist `start_run` + events — client + graph `route`→`start_run`→`run_events` + live smoke  
+- [x] 9. `POST /v1/chat` + SSE stream  
+- [x] 10. Phase B `design_code` + `compile_loop` — graph branch `codegen_strategy`→design→compile≤5; template fallback when `llm=None`; `pending_human=promote` on ok (no promote)  
+- [x] 11. Phase C confirm + promote + activate — `POST .../confirm`, `APPROVE_*` chat, human_gate + promote/activate nodes; no auto-promote  
 - [ ] 12. (Separate) AlgoCraft-UI: provider/model dropdowns + chat panel  
 
 ---

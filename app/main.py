@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health, llm_catalog, sessions
+from app.api import chat, confirm, health, llm_catalog, sessions
 from app.config import get_settings
 
 settings = get_settings()
@@ -26,6 +26,8 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(llm_catalog.router)
 app.include_router(sessions.router)
+app.include_router(confirm.router)
+app.include_router(chat.router)
 
 
 def main() -> None:

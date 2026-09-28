@@ -62,6 +62,7 @@ def _session_detail(session: Session) -> SessionDetailOut:
         last_metrics=session.last_metrics,
         last_card=session.last_card,
         pending_human=session.pending_human,  # type: ignore[arg-type]
+        pending_strategy_name=session.pending_strategy_name,
     )
 
 

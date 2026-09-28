@@ -67,3 +67,4 @@ class SessionDetailOut(BaseModel):
     last_metrics: dict[str, Any] | None = None
     last_card: dict[str, Any] | None = None
     pending_human: Literal["none", "promote", "activate"] = "none"
+    pending_strategy_name: str | None = None

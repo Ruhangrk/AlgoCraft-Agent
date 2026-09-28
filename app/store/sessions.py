@@ -20,6 +20,8 @@ class Session:
     last_metrics: dict[str, Any] | None = None
     last_card: dict[str, Any] | None = None
     pending_human: str = "none"  # none | promote | activate
+    pending_strategy_name: str | None = None
+    stream_events: list[dict[str, str]] = field(default_factory=list)
 
 
 class SessionStore:

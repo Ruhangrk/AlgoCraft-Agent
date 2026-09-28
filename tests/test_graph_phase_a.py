@@ -11,6 +11,8 @@ from app.graph.graph import build_graph
 class FakeClient:
     def __init__(self) -> None:
         self.backtests: list[dict] = []
+        self.runs: list[dict] = []
+        self.events_calls: list[dict] = []
 
     async def list_strategies(self) -> list[str]:
         return ["hammer_reversal", "ema_crossover"]
@@ -21,6 +23,9 @@ class FakeClient:
     async def search_instruments(self, q: str, limit: int = 20) -> list[dict]:
         return [{"ticker": q}]
 
+    async def ensure_market_data(self, body: dict) -> dict:
+        return {"results": [{"ticker": t, "ok": True} for t in body.get("tickers", [])]}
+
     async def create_workbook(self, name: str, capital_paise: int) -> int:
         return 7
 
@@ -29,7 +34,19 @@ class FakeClient:
         return {"id": 99, "fills": 4, "pnl_paise": 250}
 
     async def start_run(self, wid: int, **kw):  # noqa: ANN003
-        return {"run_id": 1, "fills": 3, "pnl_paise": 50, **kw}
+        self.runs.append({"wid": wid, **kw})
+        return {
+            "run_id": 11,
+            "fills": 3,
+            "returned_paise": 50,
+            "selected": "hammer_reversal",
+            "mode": "hist_replay",
+            **kw,
+        }
+
+    async def run_events(self, wid: int, rid: int, include: str = "routing,fill") -> list:
+        self.events_calls.append({"wid": wid, "rid": rid, "include": include})
+        return [{"type": "fill", "run_id": rid}, {"type": "routing", "run_id": rid}]
 
 
 @pytest.mark.asyncio
@@ -86,3 +103,33 @@ async def test_phase_a_retry_then_respond_on_weak() -> None:
     assert client.n == 2
     assert result["eval_verdict"] == "pass"
     assert result["iteration"] == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_a_hist_route_fetches_events() -> None:
+    graph = build_graph()
+    client = FakeClient()
+
+    async def _list_routers() -> list[str]:
+        return ["live_run_testing_router", "default_router"]
+
+    client.list_routers = _list_routers  # type: ignore[method-assign]
+
+    result = await graph.ainvoke(
+        {
+            "messages": [
+                HumanMessage(content="Run hist route with live_run_testing_router")
+            ],
+            "iteration": 0,
+            "max_iterations": 1,
+        },
+        config={"configurable": {"algocraft": client}},
+    )
+    assert result["intent"] == "route"
+    assert result["chosen"]["router"] == "live_run_testing_router"
+    assert client.runs
+    assert client.events_calls
+    assert result["cpp_results"]["event_count"] == 2
+    assert result["metrics"]["pnl_paise"] == 50  # from returned_paise
+    assert result["metrics"]["event_count"] == 2
+    assert result["card"]["events_preview"]

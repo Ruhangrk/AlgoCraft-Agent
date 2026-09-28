@@ -39,12 +39,21 @@ async def propose(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
 
     settings = get_settings()
     capital = 1_00_000_00  # ₹1L default in paise
-    days = last_n_session_days(5)
+    lower = text.lower()
+    n_days = 5 if any(w in lower for w in ("last 5", "last week", "past week", "5 session")) else 2
+    days = last_n_session_days(n_days)
     from_ns, to_ns = session_range_ns(days[0], days[-1])
 
     if intent == "route":
         routers = list(state.get("router_candidates") or [])
-        router = _pick_name(routers, text) or "default_router"
+        # Prefer a light router for agent hist unless user names one
+        router = _pick_name(routers, text)
+        if router is None:
+            for preferred in ("live_run_testing_router", "default_router"):
+                if preferred in routers:
+                    router = preferred
+                    break
+            router = router or (routers[0] if routers else "default_router")
         # Prefer past closed day for hist
         anchor = days[-1]
         chosen = {

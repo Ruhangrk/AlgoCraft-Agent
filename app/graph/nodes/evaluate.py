@@ -41,11 +41,17 @@ def evaluate_node(state: AgentState) -> dict[str, Any]:
     settings = get_settings()
     max_it = int(state.get("max_iterations") or settings.agent_max_iterations)
     cpp = state.get("cpp_results") or {}
+    pnl = cpp.get("pnl_paise")
+    if pnl is None:
+        pnl = cpp.get("returned_paise") or 0
     metrics = {
         "fills": int(cpp.get("fills") or 0),
-        "pnl_paise": int(cpp.get("pnl_paise") or 0),
+        "pnl_paise": int(pnl or 0),
         "backtest_id": cpp.get("id"),
         "run_id": cpp.get("run_id") or cpp.get("id"),
+        "event_count": int(cpp.get("event_count") or len(cpp.get("events") or [])),
+        "selected": cpp.get("selected"),
+        "mode": cpp.get("mode"),
     }
     if state.get("error"):
         return {
