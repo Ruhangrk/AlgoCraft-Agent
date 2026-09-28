@@ -1,0 +1,58 @@
+# Allowlisted LLM providers + models (UI + server source of truth).
+# API keys live in AGENT_SECRETS_FILE — never here.
+# Runtime: intersect with live list-models (see ARCHITECTURE §8.7).
+# Preference: groq → gemini → openrouter → deepseek (last).
+# Model ids verified against live provider APIs (2026-09-28).
+
+default_provider: groq
+default_model: openai/gpt-oss-20b
+default_temperature: 0.2
+temperature_min: 0.0
+temperature_max: 2.0
+
+providers:
+  deepseek:
+    label: DeepSeek
+    base_url: https://api.deepseek.com
+    env_key: DEEPSEEK_API_KEY
+    models:
+      - id: deepseek-chat
+        label: DeepSeek Chat
+      - id: deepseek-reasoner
+        label: DeepSeek Reasoner
+
+  gemini:
+    label: Google Gemini
+    # no base_url — uses Google GenAI SDK
+    env_key: GEMINI_API_KEY
+    models:
+      - id: gemini-3.8-flash
+        label: Gemini 3.8 Flash
+      - id: gemini-2.5-flash
+        label: Gemini 2.5 Flash
+      - id: gemini-2.5-pro
+        label: Gemini 2.5 Pro
+
+  openrouter:
+    label: OpenRouter
+    base_url: https://openrouter.ai/api/v1
+    env_key: OPENROUTER_API_KEY
+    models:
+      - id: deepseek/deepseek-chat
+        label: DeepSeek Chat (via OR)
+      - id: meta-llama/llama-3.3-70b-instruct
+        label: Llama 3.3 70B (via OR)
+      - id: google/gemini-2.0-flash-001
+        label: Gemini Flash (via OR)
+
+  groq:
+    label: Groq
+    base_url: https://api.groq.com/openai/v1
+    env_key: GROQ_API_KEY
+    models:
+      - id: openai/gpt-oss-20b
+        label: GPT-OSS 20B
+      - id: openai/gpt-oss-120b
+        label: GPT-OSS 120B
+      - id: qwen/qwen3.8-27b
+        label: Qwen3.8 27B

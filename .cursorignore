@@ -1,0 +1,5 @@
+# Real LLM secrets (if ever placed under this tree by mistake)
+llm.secrets.env
+*.secrets.env
+.env
+.env.local
