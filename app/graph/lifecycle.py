@@ -11,10 +11,19 @@ from app.graph.nodes.activate import activate
 from app.graph.nodes.human_gate import human_gate
 from app.graph.nodes.promote import promote
 from app.graph.nodes.respond import respond
+from app.graph.thinking import thought
 from app.store.sessions import Session
 from app.tools.algocraft_client import AlgocraftClient
 
 Action = Literal["promote", "activate"]
+
+
+def _apply_patch(state: dict[str, Any], patch: dict[str, Any]) -> None:
+    """Merge node patch; concatenate thinking lists (no LangGraph reducer here)."""
+    extra = list(patch.get("thinking") or [])
+    state.update({k: v for k, v in patch.items() if k != "thinking"})
+    if extra:
+        state["thinking"] = list(state.get("thinking") or []) + extra
 
 
 async def run_confirm(
@@ -39,6 +48,11 @@ async def run_confirm(
             "pending_human": session.pending_human,
             "response_text": "Nothing to confirm — compile a strategy first.",
             "card": {"verdict": "error", "pending_human": session.pending_human},
+            "thinking": thought(
+                "lifecycle",
+                "Confirm aborted: no pending strategy name on session.",
+                phase="decide",
+            )["thinking"],
         }
 
     settings = get_settings()
@@ -56,12 +70,19 @@ async def run_confirm(
         "pending_human": session.pending_human,
         "cpp_results": {},
         "metrics": dict(session.last_metrics or {}),
+        "thinking": thought(
+            "lifecycle",
+            f"Phase C confirm started: action={action}, strategy={name}, "
+            f"session pending_human={session.pending_human}.",
+            phase="start",
+            data={"action": action, "name": name},
+        )["thinking"],
     }
     config = {"configurable": {"algocraft": client, "confirm_action": action, "llm": None}}
 
     try:
         gate = await human_gate(state, config)  # type: ignore[arg-type]
-        state.update(gate)
+        _apply_patch(state, gate)
         if state.get("error"):
             text = state["error"]
             return {
@@ -81,10 +102,10 @@ async def run_confirm(
             mid = await promote(state, config)  # type: ignore[arg-type]
         else:
             mid = await activate(state, config)  # type: ignore[arg-type]
-        state.update(mid)
+        _apply_patch(state, mid)
 
         out = await respond(state, config)  # type: ignore[arg-type]
-        state.update(out)
+        _apply_patch(state, out)
         return state
     finally:
         if owns:

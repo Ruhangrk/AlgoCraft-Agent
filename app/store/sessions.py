@@ -21,6 +21,8 @@ class Session:
     last_card: dict[str, Any] | None = None
     pending_human: str = "none"  # none | promote | activate
     pending_strategy_name: str | None = None
+    create_draft: dict[str, Any] = field(default_factory=dict)
+    last_thinking: list[dict[str, Any]] = field(default_factory=list)
     stream_events: list[dict[str, str]] = field(default_factory=list)
 
 

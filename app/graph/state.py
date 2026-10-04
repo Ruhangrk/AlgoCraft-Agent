@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 from typing import Annotated, Any, Literal
 
 from langgraph.graph.message import add_messages
@@ -18,12 +19,28 @@ class AgentState(TypedDict, total=False):
     llm_temperature: float
 
     intent: Literal[
-        "research", "backtest", "route", "codegen_strategy", "explain", "unknown"
+        "chat",
+        "discuss",
+        "backtest",
+        "route",
+        "create",
+        "clarify",
+        # legacy aliases still accepted in old tests / cards
+        "research",
+        "codegen_strategy",
+        "explain",
+        "unknown",
     ]
     tickers: list[str]
     strategy_candidates: list[str]
     router_candidates: list[str]
     research_notes: str
+
+    topic_strategy: str | None
+    create_draft: dict[str, Any]
+    create_ready: bool
+    interview_prompt: str | None
+    discuss_summary: str | None
 
     chosen: dict[str, Any]
     cpp_results: dict[str, Any]
@@ -38,3 +55,4 @@ class AgentState(TypedDict, total=False):
     card: dict[str, Any]
     response_text: str
     _retry: bool
+    thinking: Annotated[list[dict[str, Any]], operator.add]

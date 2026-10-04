@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from app.graph.nodes._common import get_client
 from app.graph.nodes.human_gate import require_pending
 from app.graph.state import AgentState
+from app.graph.thinking import thought
 
 _RESTART_NOTE = (
     "Activated in catalog. Rebuild C++ and run `scripts/serve --restart` "
@@ -24,6 +25,7 @@ async def activate(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             "eval_verdict": "error",
             "pending_human": state.get("pending_human") or "none",
             "cpp_results": state.get("cpp_results") or {},
+            **thought("activate", err, phase="decide"),
         }
 
     client = get_client(config)
@@ -37,6 +39,7 @@ async def activate(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             "pending_human": "activate",
             "cpp_results": {"ok": False, "error": str(exc)},
             "feedback": str(exc),
+            **thought("activate", f"C++ activate failed: {exc}", phase="result"),
         }
 
     note = str((raw or {}).get("note") or _RESTART_NOTE)
@@ -52,4 +55,10 @@ async def activate(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             "enabled": True,
             "id": (raw or {}).get("id"),
         },
+        **thought(
+            "activate",
+            f"Activated `{name}` (enabled=1). Rebuild+restart still required. {note}",
+            phase="result",
+            data={"name": name, "enabled": True},
+        ),
     }

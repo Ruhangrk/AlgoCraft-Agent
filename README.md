@@ -35,4 +35,7 @@ Agent-facing curated docs live under [`docs/cpp/`](docs/cpp/):
 - Always share [`docs/cpp/INDEX.md`](docs/cpp/INDEX.md) with the LLM.
 - Fetch at most 2–3 other files from that index per turn.
 
-Full build architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md) (synced from [`Notes/AI_AGENT.md`](Notes/AI_AGENT.md)).
+- How it works now: [`Notes/ARCHITECTURE.md`](Notes/ARCHITECTURE.md)  
+- Code / LangGraph walkthrough: [`Notes/CODE_FLOW.md`](Notes/CODE_FLOW.md)  
+- Build spec / checklist / locked contracts: [`Notes/AI_AGENT.md`](Notes/AI_AGENT.md)  
+- Postman collection: [`postman/`](postman/)

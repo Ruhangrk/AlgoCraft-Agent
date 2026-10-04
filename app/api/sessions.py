@@ -63,6 +63,8 @@ def _session_detail(session: Session) -> SessionDetailOut:
         last_card=session.last_card,
         pending_human=session.pending_human,  # type: ignore[arg-type]
         pending_strategy_name=session.pending_strategy_name,
+        create_draft=dict(session.create_draft or {}),
+        last_thinking=list(session.last_thinking or []),
     )
 
 

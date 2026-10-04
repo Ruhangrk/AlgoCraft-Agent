@@ -6,19 +6,13 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
+from app.graph.nodes._common import get_client
 from app.graph.state import AgentState
-
-
-def _client(config: RunnableConfig) -> Any:
-    conf = (config or {}).get("configurable") or {}
-    client = conf.get("algocraft")
-    if client is None:
-        raise RuntimeError("configurable['algocraft'] client required")
-    return client
+from app.graph.thinking import thought
 
 
 async def research(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
-    client = _client(config)
+    client = get_client(config)
     strategies = await client.list_strategies()
     routers = await client.list_routers()
 
@@ -34,9 +28,29 @@ async def research(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 — research is best-effort
             notes_parts.append(f"instrument search failed: {exc}")
 
+    notes = " | ".join(notes_parts)
+    intent = state.get("intent")
+    route_hint = {
+        "backtest": "next → propose/execute",
+        "route": "next → propose/execute (hist)",
+        "create": "next → create_interview / design",
+        "discuss": "next → discuss",
+    }.get(str(intent), "next → respond")
+
     return {
         "strategy_candidates": list(strategies),
         "router_candidates": list(routers),
-        "research_notes": " | ".join(notes_parts),
+        "research_notes": notes,
         "tickers": tickers,
+        **thought(
+            "research",
+            f"Fetched C++ catalogs: {len(strategies)} strategies, {len(routers)} routers. "
+            f"intent={intent} → {route_hint}. Notes: {notes[:320]}",
+            phase="tool",
+            data={
+                "strategy_count": len(strategies),
+                "router_count": len(routers),
+                "intent": intent,
+            },
+        ),
     }

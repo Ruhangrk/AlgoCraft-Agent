@@ -2,11 +2,12 @@
 
 **Repo to create:** `AlgoCraft-Agent` (sibling of `AlgoCraft`)  
 **Stack:** Python 3.11+ · **uv** · FastAPI · LangGraph · httpx · Pydantic v2 · SSE  
-**Canonical docs:** keep `Notes/AI_AGENT.md` and root `ARCHITECTURE.md` in sync.
+**Docs split:** this file = **build spec + checklist + locked contracts**.  
+Current how-it-works: [`ARCHITECTURE.md`](ARCHITECTURE.md). Code/LangGraph walkthrough: [`CODE_FLOW.md`](CODE_FLOW.md).
 
-**Status (2026-09-28):**
+**Status (2026-10):**
 - C++ engine APIs for Phase A **and** B/C compile/promote/activate are **implemented** in AlgoCraft.
-- Python agent code: **not started**. This doc is the full build plan.
+- Python agent (router-first LangGraph + FastAPI chat/SSE) is **implemented** in this repo — see `ARCHITECTURE.md` / `CODE_FLOW.md`.
 - **LLM:** multi-provider YAML allowlist ∩ live discovery; rate-limit → user switches; DeepSeek last; mock while coding (§8). Locked.
 
 **Non-goals (v1):** auto live trading without human approval; LLM shell/git access; embedding bars/risk in Python; arbitrary client-supplied model ids / base URLs.
@@ -83,37 +84,65 @@ AlgoCraft-UI (:5173)
 
 ## 4. LangGraph
 
-### 4.1 Phase A graph
+### 4.0 Product model (router-first)
 
+| Path | When | What happens |
+|------|------|----------------|
+| **Chat** | Greeting | Friendly help text — no C++ |
+| **Clarify** | Ambiguous message | Ask user to pick backtest / discuss / create — no execute |
+| **Discuss** | explain / list / compare / brainstorm | List catalogs, talk — no backtest/compile |
+| **Backtest / hist** | User **explicitly** says backtest or hist/router run | research → propose → execute → evaluate → respond |
+| **Create** | User wants a **new** strategy | Interview (≥ ticker + idea) → design_code → compile_loop → human promote/activate |
+
+### 4.1 Agent brain (as implemented)
+
+Source of truth: `app/graph/graph.py`. Every node appends `thinking` crumbs.
+
+```mermaid
+flowchart TD
+  START([START]) --> route[route]
+  route -->|chat / clarify| respond
+  route -->|discuss| discuss --> respond
+  route -->|backtest / hist route| research --> propose --> execute --> evaluate
+  evaluate -->|retry| propose
+  evaluate -->|done| respond
+  route -->|create| interview[create_interview]
+  interview -->|missing ticker or idea| respond
+  interview -->|ready| design_code --> compile_loop --> respond
+  respond --> END([END])
 ```
-START → classify_intent → research → propose → execute → evaluate
-                              ↑                      │
-                              └──── iterate < max ────┘ (verdict=fail/weak)
-                                                    │
-                                                    ▼
-                                                 respond → END
+
+**Plain words:**
+1. **Route first** — decide the lane; never silent-backtest.
+2. **Create** is multi-turn: session keeps `create_draft` until ticker + idea are known (or user says `cancel`).
+3. Phase C stays outside the graph: confirm / `APPROVE_*` → promote → activate.
+
+### 4.2 Phase C — human confirm
+
+```mermaid
+flowchart LR
+  B[Compile ok<br/>pending_human=promote] --> H1{confirm promote?}
+  H1 --> promote --> H2{confirm activate?}
+  H2 --> activate --> Done[rebuild + restart serve]
 ```
 
-Use `langgraph.graph.StateGraph`. Conditional edges from `evaluate`:
-- `pass` | `need_human` → `respond`
-- `fail` / `weak` and `iteration < max_iterations` → `propose` (increment `iteration`, set `feedback`)
-- else → `respond`
+### 4.2b UI wires (optional)
 
-### 4.2 Phase B/C extension (same graph, extra intent)
-
-If intent = `codegen_strategy`:
-
-```
-research → design_code → compile_loop → (human_gate_promote) → promote
-        → (human_gate_activate) → activate → respond
+```mermaid
+flowchart LR
+  UI[UI] -->|POST /v1/chat| API[Agent :8100]
+  API -->|message + create_draft| G[LangGraph §4.1]
+  API -->|APPROVE_* / confirm| C[Phase C]
+  G --> CPP[C++ :8080]
+  C --> CPP
+  API -->|SSE thinking/card/done| UI
 ```
 
-`compile_loop`: call compile; if not ok, LLM fixes from `log`; repeat ≤ 5.
-
-### 4.3 AgentState (Pydantic preferred)
+### 4.3 AgentState (TypedDict)
 
 ```python
 from typing import Annotated, Any, Literal
+import operator
 from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
 
@@ -123,12 +152,13 @@ class AgentState(TypedDict, total=False):
     user_jwt: str                    # forwarded to C++
     workbook_id: int | None
     # LLM selection lives on the session + LangGraph configurable — NOT api keys
-    llm_provider: str                # e.g. "deepseek" | "gemini" | "openrouter" | "groq"
-    llm_model: str                   # exact allowlisted model id for that provider
-    llm_temperature: float           # from UI; clamped to catalog [min, max]
+    llm_provider: str
+    llm_model: str
+    llm_temperature: float
 
     intent: Literal[
-        "research", "backtest", "route", "codegen_strategy", "explain", "unknown"
+        "chat", "research", "backtest", "route",
+        "codegen_strategy", "explain", "unknown",
     ]
     tickers: list[str]
     strategy_candidates: list[str]
@@ -137,7 +167,7 @@ class AgentState(TypedDict, total=False):
 
     chosen: dict[str, Any]
     # backtest: {strategy, ticker, from_ns, to_ns, capital_paise}
-    # route:    {router, anchor_date, capital_paise}  # hist preferred
+    # route:    {router, anchor_date, capital_paise}
     # codegen:  {name, class_name, hpp, cpp}
 
     cpp_results: dict[str, Any]
@@ -145,27 +175,32 @@ class AgentState(TypedDict, total=False):
     eval_verdict: Literal["pass", "weak", "fail", "need_human", "error"]
     feedback: str
     iteration: int
-    max_iterations: int              # default 3
-    compile_attempts: int            # default 0, max 5
+    max_iterations: int
+    compile_attempts: int
     pending_human: Literal["none", "promote", "activate"]
     error: str | None
+    card: dict[str, Any]
+    response_text: str
+    thinking: Annotated[list[dict[str, Any]], operator.add]
+    # crumb: {agent, phase, thought, data?}
 ```
 
 ### 4.4 Node contracts (implement these files)
 
 | Node | File | Must do |
 |------|------|---------|
-| `classify_intent` | `nodes/classify.py` | LLM or rules → `intent` |
-| `research` | `nodes/research.py` | `list_strategies`, `list_routers`, optional `search_instruments`, `ensure_market_data` |
-| `propose` | `nodes/propose.py` | LLM constrained to **exact** names from C++; fill `chosen` |
-| `execute` | `nodes/execute.py` | `start_backtest` **or** `start_run` (hist); store raw JSON in `cpp_results` |
-| `evaluate` | `nodes/evaluate.py` | Pure Python thresholds → `eval_verdict`, `metrics`, `feedback` |
-| `respond` | `nodes/respond.py` | LLM summary + structured `card` JSON for UI |
+| `classify_intent` | `nodes/classify.py` | Rules → `intent` (+ greetings → `chat`); emit thinking |
+| `research` | `nodes/research.py` | `list_strategies`, `list_routers`, optional `search_instruments` |
+| `propose` | `nodes/propose.py` | Exact C++ names → `chosen` |
+| `execute` | `nodes/execute.py` | `start_backtest` or `start_run` (hist) → `cpp_results` |
+| `evaluate` | `nodes/evaluate.py` | Thresholds → `eval_verdict`, `metrics`, `_retry` |
+| `respond` | `nodes/respond.py` | User text + `card` JSON |
 | `design_code` | `nodes/design_code.py` | Phase B: emit Strategy sources |
-| `compile_loop` | `nodes/compile_loop.py` | Phase B: compile + fix |
-| `human_gate` | `nodes/human_gate.py` | Interrupt / wait for UI `confirm=true` before promote/activate |
+| `compile_loop` | `nodes/compile_loop.py` | Phase B: compile + fix ≤5 |
+| `human_gate` | `nodes/human_gate.py` | Phase C: validate `pending_human` matches action |
+| `promote` / `activate` | `nodes/promote.py`, `activate.py` | Phase C C++ calls (via `lifecycle.run_confirm`) |
 
-**LLM injection:** nodes that need a model read `config["configurable"]["llm"]` (a LangChain `BaseChatModel` built by `get_chat_model`). Do **not** branch on provider inside nodes. Do **not** put API keys in `AgentState`.
+**LLM injection:** nodes that need a model read `config["configurable"]["llm"]`. Do **not** branch on provider inside nodes. Do **not** put API keys in `AgentState`. Chat v1 often runs with `llm=None` (rules + template codegen).
 
 ### 4.5 Evaluate thresholds (env)
 
@@ -190,11 +225,12 @@ else:
 
 ### 4.6 Human gates (Phase C)
 
-Do **not** auto-promote. Patterns:
-- LangGraph `interrupt()` / wait for next chat message `APPROVE_PROMOTE` / `APPROVE_ACTIVATE`, **or**
-- FastAPI `POST /v1/sessions/{id}/confirm` with `{action: "promote"|"activate"}`.
+Do **not** auto-promote. Implemented path:
+- FastAPI `POST /v1/sessions/{id}/confirm` with `{action: "promote"|"activate"}`, **or**
+- Chat message `APPROVE_PROMOTE` / `APPROVE_ACTIVATE` → same `run_confirm` helper.
 
 Agent message must show: strategy name, compile log summary, paths, risk note (restart required).
+Each Phase C step also appends `thinking` crumbs for the UI dropdown.
 
 ---
 
@@ -208,7 +244,7 @@ Agent message must show: strategy name, compile log summary, paths, risk note (r
 | `PATCH` | `/v1/sessions/{id}/llm` | `{provider?, model?, temperature?}` — change dropdowns / temp mid-session; re-validate. |
 | `GET` | `/v1/sessions/{id}` | history + last metrics/card + current `provider`/`model`/`temperature` |
 | `POST` | `/v1/chat` | `{session_id, message, provider?, model?, temperature?}` — optional override for this turn; else session defaults. Runs graph (sync JSON) **or** kicks async job |
-| `GET` | `/v1/chat/{session_id}/stream` | **SSE**: `event: token\|tool\|card\|error\|done` — `error` includes `llm_rate_limited` (§8.8) |
+| `GET` | `/v1/chat/{session_id}/stream` | **SSE**: `event: thinking\|token\|tool\|card\|error\|done` — `thinking` = per-agent crumbs; `error` includes `llm_rate_limited` (§8.8) |
 | `POST` | `/v1/sessions/{id}/confirm` | `{action: "promote"\|"activate"}` |
 
 Sessions: **in-memory dict** v1 (`SessionStore`); optional SQLite later.  
@@ -770,4 +806,4 @@ User: Backtest hammer_reversal on ONGC for last 5 sessions with 1L
 
 ---
 
-*When starting: keep `Notes/AI_AGENT.md` and root `ARCHITECTURE.md` in sync; implement checklist §12 in order. Part 1 = checklist items 1–3 (skeleton, LLM catalog/factory, config + healthz).*
+*Build/checklist lives here. Runtime architecture: `ARCHITECTURE.md`. Code walkthrough: `CODE_FLOW.md`. Checklist §12 items 1–11 are done in-repo; item 12 is AlgoCraft-UI.*

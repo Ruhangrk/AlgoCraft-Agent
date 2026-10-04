@@ -39,6 +39,7 @@ class ChatResponse(BaseModel):
     response_text: str | None = None
     metrics: dict[str, Any] | None = None
     card: dict[str, Any] | None = None
+    thinking: list[dict[str, Any]] = Field(default_factory=list)
     provider: str
     model: str
     temperature: float
@@ -57,6 +58,14 @@ def _apply_result_to_session(session: Session, message: str, result: dict[str, A
         session.messages.append({"role": "assistant", "content": text})
     session.last_metrics = result.get("metrics")
     session.last_card = result.get("card")
+    thinking = list(result.get("thinking") or [])
+    session.last_thinking = thinking
+    if "create_draft" in result:
+        draft = dict(result.get("create_draft") or {})
+        if draft.get("status") == "cancelled" or draft.get("active") is False:
+            session.create_draft = {}
+        else:
+            session.create_draft = draft
     if result.get("workbook_id") is not None:
         session.workbook_id = int(result["workbook_id"])
     if result.get("pending_human") is not None:
@@ -72,18 +81,31 @@ def _apply_result_to_session(session: Session, message: str, result: dict[str, A
             session.pending_strategy_name = None
 
     events: list[dict[str, str]] = []
+    for crumb in thinking:
+        events.append(
+            _sse(
+                "thinking",
+                {
+                    "agent": crumb.get("agent"),
+                    "phase": crumb.get("phase"),
+                    "thought": crumb.get("thought"),
+                    "data": crumb.get("data"),
+                },
+            )
+        )
     intent = result.get("intent")
     if intent:
-        events.append(_sse("tool", {"node": "classify_intent", "intent": intent}))
+        events.append(_sse("tool", {"node": "route", "intent": intent}))
     chosen = result.get("chosen") or {}
-    if chosen and intent == "codegen_strategy":
+    if chosen and intent == "create":
         events.append(
             _sse(
                 "tool",
                 {
-                    "node": "design_code",
+                    "node": "design_code" if chosen.get("hpp") else "create_interview",
                     "name": chosen.get("name"),
                     "source": chosen.get("source"),
+                    "ticker": chosen.get("ticker"),
                 },
             )
         )
@@ -98,7 +120,7 @@ def _apply_result_to_session(session: Session, message: str, result: dict[str, A
             )
         )
     if result.get("cpp_results"):
-        node = "compile_loop" if intent == "codegen_strategy" else "execute"
+        node = "compile_loop" if intent == "create" else "execute"
         events.append(
             _sse(
                 "tool",
@@ -124,6 +146,7 @@ def _apply_result_to_session(session: Session, message: str, result: dict[str, A
             {
                 "verdict": result.get("eval_verdict"),
                 "session_id": session.session_id,
+                "thinking_count": len(thinking),
             },
         )
     )
@@ -177,7 +200,9 @@ async def post_chat(body: ChatRequest) -> ChatResponse:
                 provider=provider,
                 model=model,
                 temperature=temperature,
-                llm=None,  # rules/template path; avoid burning LLM quota
+                llm=None,  # auto-built from session provider/model when key present
+                create_draft=session.create_draft,
+                session_id=session.session_id,
             )
     except HTTPException:
         raise
@@ -206,6 +231,7 @@ async def post_chat(body: ChatRequest) -> ChatResponse:
         response_text=result.get("response_text"),
         metrics=result.get("metrics"),
         card=result.get("card"),
+        thinking=list(result.get("thinking") or []),
         provider=provider,
         model=model,
         temperature=temperature,

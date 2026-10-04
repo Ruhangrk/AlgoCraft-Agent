@@ -45,6 +45,13 @@ async def test_chat_and_sse_stream(
             "cpp_results": {"id": 1, "fills": 4},
             "workbook_id": 7,
             "error": None,
+            "thinking": [
+                {
+                    "agent": "classify_intent",
+                    "phase": "decide",
+                    "thought": "intent=backtest",
+                }
+            ],
         }
 
     monkeypatch.setattr("app.api.chat.run_phase_a", fake_run_phase_a)
@@ -58,17 +65,20 @@ async def test_chat_and_sse_stream(
     assert body["verdict"] == "pass"
     assert body["card"]["verdict"] == "pass"
     assert body["metrics"]["fills"] == 4
+    assert body["thinking"]
+    assert body["thinking"][0]["agent"] == "classify_intent"
 
     detail = client.get(f"/v1/sessions/{session_id}").json()
     assert len(detail["messages"]) == 2
     assert detail["last_card"]["verdict"] == "pass"
     assert detail["workbook_id"] == 7
+    assert detail["last_thinking"]
 
     # SSE replay
     with client.stream("GET", f"/v1/chat/{session_id}/stream") as stream:
         assert stream.status_code == 200
         raw = "".join(stream.iter_text())
-    assert "event: card" in raw or "event:tool" in raw or "card" in raw
+    assert "event: thinking" in raw or "thinking" in raw
     assert "done" in raw
 
 

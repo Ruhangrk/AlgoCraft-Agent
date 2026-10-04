@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.graph.lifecycle import run_confirm
 from app.store.sessions import Session, get_session_store
@@ -25,6 +25,7 @@ class ConfirmResponse(BaseModel):
     response_text: str | None = None
     metrics: dict[str, Any] | None = None
     card: dict[str, Any] | None = None
+    thinking: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -35,6 +36,7 @@ def _apply_confirm_to_session(session: Session, message: str, result: dict[str, 
         session.messages.append({"role": "assistant", "content": text})
     session.last_metrics = result.get("metrics")
     session.last_card = result.get("card")
+    session.last_thinking = list(result.get("thinking") or [])
     if result.get("pending_human") is not None:
         session.pending_human = str(result["pending_human"])
     if session.pending_human == "none":
@@ -84,5 +86,6 @@ async def post_confirm(session_id: str, body: ConfirmRequest) -> ConfirmResponse
         response_text=result.get("response_text"),
         metrics=result.get("metrics"),
         card=result.get("card"),
+        thinking=list(result.get("thinking") or []),
         error=result.get("error"),
     )

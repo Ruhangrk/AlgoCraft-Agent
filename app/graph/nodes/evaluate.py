@@ -6,6 +6,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.graph.state import AgentState
+from app.graph.thinking import thought
 
 
 def evaluate_metrics(
@@ -59,6 +60,12 @@ def evaluate_node(state: AgentState) -> dict[str, Any]:
             "eval_verdict": "error",
             "feedback": state["error"],
             "_retry": False,
+            **thought(
+                "evaluate",
+                f"Verdict=error due to prior error: {state['error']}",
+                phase="decide",
+                data=metrics,
+            ),
         }
 
     verdict, feedback = evaluate_metrics(metrics)
@@ -73,4 +80,15 @@ def evaluate_node(state: AgentState) -> dict[str, Any]:
     if verdict in ("fail", "weak") and it < max_it:
         out["iteration"] = it + 1
         out["_retry"] = True
+        retry_note = f" Will retry propose (iteration {it + 1}/{max_it})."
+    else:
+        retry_note = " Done → respond."
+    out.update(
+        thought(
+            "evaluate",
+            f"Verdict={verdict}: {feedback}.{retry_note}",
+            phase="decide",
+            data={"verdict": verdict, "metrics": metrics, "retry": out["_retry"]},
+        )
+    )
     return out

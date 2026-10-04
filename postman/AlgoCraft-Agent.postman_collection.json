@@ -1,0 +1,535 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-algocraft-agent-8100",
+    "name": "AlgoCraft-Agent",
+    "description": "HTTP APIs for AlgoCraft-Agent (:8100).\n\n## Setup\n1. Import this collection **and** `AlgoCraft-Agent.postman_environment.json`.\n2. Select environment **AlgoCraft-Agent Local**.\n3. Start C++ on :8080 and Agent: `uv run uvicorn app.main:app --host 127.0.0.1 --port 8100`.\n4. Run **0. Setup → C++ Login** (fills `jwt`).\n5. Run **2. Sessions → Create session** (fills `session_id`).\n6. Use chat requests under **3. Chat**.\n\nAuth: JWT is issued by AlgoCraft C++ (`POST /auth/login`). Agent stores it on the session and forwards it to C++. Chat/confirm use `session_id` only.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "agent_base", "value": "http://127.0.0.1:8100" },
+    { "key": "cpp_base", "value": "http://127.0.0.1:8080" }
+  ],
+  "item": [
+    {
+      "name": "0. Setup",
+      "item": [
+        {
+          "name": "C++ Login (get JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login ok', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.token).to.be.a('string').and.not.empty;",
+                  "  pm.environment.set('jwt', j.token);",
+                  "  if (j.user && j.user.username) {",
+                  "    pm.environment.set('username', j.user.username);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{cpp_username}}\",\n  \"password\": \"{{cpp_password}}\"\n}"
+            },
+            "url": "{{cpp_base}}/auth/login",
+            "description": "Calls AlgoCraft C++ (not the agent). Saves `jwt` into the environment."
+          }
+        },
+        {
+          "name": "C++ Auth Me (verify JWT)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt}}" }
+            ],
+            "url": "{{cpp_base}}/auth/me",
+            "description": "Optional check that the JWT is valid against C++."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Health & Catalog",
+      "item": [
+        {
+          "name": "GET healthz",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('health responds', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j).to.have.property('status');",
+                  "  pm.expect(j).to.have.property('cpp_reachable');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{agent_base}}/healthz",
+            "description": "Agent up + whether C++ :8080 is reachable. No JWT."
+          }
+        },
+        {
+          "name": "GET LLM catalog",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{agent_base}}/v1/llm/catalog",
+              "host": ["{{agent_base}}"],
+              "path": ["v1", "llm", "catalog"]
+            },
+            "description": "Provider/model dropdowns. No API keys in response. No JWT."
+          }
+        },
+        {
+          "name": "GET LLM catalog (refresh)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{agent_base}}/v1/llm/catalog?refresh=true",
+              "host": ["{{agent_base}}"],
+              "path": ["v1", "llm", "catalog"],
+              "query": [{ "key": "refresh", "value": "true" }]
+            },
+            "description": "Bypass discovery TTL cache."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Sessions",
+      "item": [
+        {
+          "name": "Create session",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('jwt')) {",
+                  "  console.warn('jwt empty — run 0. Setup → C++ Login first');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('session created', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.session_id).to.be.a('string').and.not.empty;",
+                  "  pm.environment.set('session_id', j.session_id);",
+                  "  pm.environment.set('provider', j.provider);",
+                  "  pm.environment.set('model', j.model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"workbook_id\": null,\n  \"provider\": \"{{provider}}\",\n  \"model\": \"{{model}}\",\n  \"temperature\": {{temperature}}\n}"
+            },
+            "url": "{{agent_base}}/v1/sessions",
+            "description": "Requires C++ JWT. Saves `session_id`. Leave provider/model as catalog defaults if unsure — or set empty and use body without them.\n\nMinimal body alternative: `{}`"
+          }
+        },
+        {
+          "name": "Create session (defaults only)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('session created', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  const j = pm.response.json();",
+                  "  pm.environment.set('session_id', j.session_id);",
+                  "  pm.environment.set('provider', j.provider);",
+                  "  pm.environment.set('model', j.model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{agent_base}}/v1/sessions",
+            "description": "Uses catalog defaults for provider/model/temperature."
+          }
+        },
+        {
+          "name": "Get session",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{agent_base}}/v1/sessions/{{session_id}}",
+            "description": "History, card, create_draft, pending_human, last_thinking."
+          }
+        },
+        {
+          "name": "Patch session LLM",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('llm patched', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const j = pm.response.json();",
+                  "  pm.environment.set('provider', j.provider);",
+                  "  pm.environment.set('model', j.model);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"{{provider}}\",\n  \"model\": \"{{model}}\",\n  \"temperature\": {{temperature}}\n}"
+            },
+            "url": "{{agent_base}}/v1/sessions/{{session_id}}/llm",
+            "description": "Change provider/model/temp mid-session. Must be allowlisted in llm_catalog.yaml."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Chat",
+      "item": [
+        {
+          "name": "Chat — hi (chat)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat lane', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.intent).to.eql('chat');",
+                  "  console.log(j.response_text);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"hi\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Greeting → intent=chat, no C++ execute."
+          }
+        },
+        {
+          "name": "Chat — ambiguous (clarify)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('clarify', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().intent).to.eql('clarify');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"I just said you HI ?\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat"
+          }
+        },
+        {
+          "name": "Chat — discuss named strategy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('discuss', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.intent).to.eql('discuss');",
+                  "  console.log(j.response_text);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"two_consecutive_bars lets discuss this\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Should focus on that strategy (not dump full catalog)."
+          }
+        },
+        {
+          "name": "Chat — list strategies",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"explain what strategies we have\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat"
+          }
+        },
+        {
+          "name": "Chat — backtest (needs C++)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('backtest intent', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.intent).to.eql('backtest');",
+                  "  console.log(j.verdict, j.response_text);",
+                  "  if (j.card) console.log(JSON.stringify(j.card.chosen, null, 2));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"backest M&M for 28th sept 26, with strategy hammer_reversal\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Typo + ticker + date. Needs live C++ + market data for that day. Adjust date to a session that exists in your DB."
+          }
+        },
+        {
+          "name": "Chat — backtest short (last sessions)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"backtest hammer_reversal on RELIANCE for last 2 sessions\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Safer smoke if you have recent RELIANCE bars."
+          }
+        },
+        {
+          "name": "Chat — create interview start",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('create interview', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.intent).to.eql('create');",
+                  "  console.log(j.response_text);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"create a strategy that buys after two red bars\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Should ask for ticker (interview incomplete)."
+          }
+        },
+        {
+          "name": "Chat — create interview supply ticker",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"RELIANCE\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Run after create interview start on the **same** session_id. May proceed to design/compile if idea already captured."
+          }
+        },
+        {
+          "name": "Chat — create full one-shot",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"Create a strategy on INFY that buys 1 share after 2 consecutive down bars and exits on the next up bar\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Ticker + idea in one message → design_code → compile_loop. May set pending_human=promote."
+          }
+        },
+        {
+          "name": "Chat — cancel create",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"cancel\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat"
+          }
+        },
+        {
+          "name": "Chat — APPROVE_PROMOTE",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"APPROVE_PROMOTE\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Only when session pending_human=promote (after successful compile)."
+          }
+        },
+        {
+          "name": "Chat — APPROVE_ACTIVATE",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"APPROVE_ACTIVATE\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Only when pending_human=activate."
+          }
+        },
+        {
+          "name": "Chat — freeform",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"message\": \"{{chat_message}}\"\n}"
+            },
+            "url": "{{agent_base}}/v1/chat",
+            "description": "Edit env var `chat_message` or the body."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Stream (SSE)",
+      "item": [
+        {
+          "name": "GET chat stream",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "text/event-stream" }],
+            "url": "{{agent_base}}/v1/chat/{{session_id}}/stream",
+            "description": "Replays SSE events from the **last** chat turn (`thinking`, `tool`, `token`, `card`, `error`, `done`). Run a Chat request first.\n\nPostman shows the stream body; for nicer SSE use curl:\n`curl -N {{agent_base}}/v1/chat/{{session_id}}/stream`"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Phase C Confirm",
+      "item": [
+        {
+          "name": "Confirm promote",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"promote\"\n}"
+            },
+            "url": "{{agent_base}}/v1/sessions/{{session_id}}/confirm",
+            "description": "Same as chat APPROVE_PROMOTE. Requires pending_human=promote."
+          }
+        },
+        {
+          "name": "Confirm activate",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"activate\"\n}"
+            },
+            "url": "{{agent_base}}/v1/sessions/{{session_id}}/confirm",
+            "description": "Requires pending_human=activate."
+          }
+        }
+      ]
+    }
+  ]
+}

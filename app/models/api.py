@@ -68,3 +68,5 @@ class SessionDetailOut(BaseModel):
     last_card: dict[str, Any] | None = None
     pending_human: Literal["none", "promote", "activate"] = "none"
     pending_strategy_name: str | None = None
+    create_draft: dict[str, Any] = Field(default_factory=dict)
+    last_thinking: list[dict[str, Any]] = Field(default_factory=list)

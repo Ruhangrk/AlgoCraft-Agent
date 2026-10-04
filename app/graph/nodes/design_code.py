@@ -15,6 +15,7 @@ from app.graph.state import AgentState
 from app.llm.prompts import DESIGN_CODE_SYSTEM
 from app.tools.algocraft_client import AlgocraftClient
 from app.docs_loader import codegen_context
+from app.graph.thinking import thought
 
 _NAME_HINT = re.compile(
     r"(?:named|called|name\s*[:=])\s*[`'\"]?([a-z][a-z0-9_]{0,63})[`'\"]?",
@@ -150,12 +151,28 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
     settings = get_settings()
     llm = get_llm(config)
     docs = codegen_context()
+    draft = dict(state.get("create_draft") or {})
+    prior = dict(state.get("chosen") or {})
+
+    # Prefer interview fields
+    if prior.get("name"):
+        preferred_name = str(prior["name"])
+    elif draft.get("name"):
+        preferred_name = str(draft["name"])
+    else:
+        preferred_name = _guess_name(text)
+
+    idea = str(prior.get("idea") or draft.get("idea") or text)
 
     chosen: dict[str, Any]
     if llm is None:
-        name = _guess_name(text)
-        class_name = snake_to_pascal(name)
-        src = _template_sources(name, class_name, text)
+        name = preferred_name
+        try:
+            AlgocraftClient.validate_strategy_name(name)
+        except ValueError:
+            name = _guess_name(text)
+        class_name = str(prior.get("class_name") or snake_to_pascal(name))
+        src = _template_sources(name, class_name, idea)
         chosen = {
             "name": name,
             "class_name": class_name,
@@ -163,12 +180,18 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
             "hpp": src["hpp"],
             "cpp": src["cpp"],
             "source": "template",
+            "ticker": prior.get("ticker") or draft.get("ticker"),
+            "idea": idea,
         }
     else:
         prompt = (
             f"{DESIGN_CODE_SYSTEM}\n\n"
             f"## C++ docs\n{docs}\n\n"
-            f"## User request\n{text}\n\n"
+            f"## Requirements\n"
+            f"preferred_name={preferred_name}\n"
+            f"ticker={prior.get('ticker') or draft.get('ticker')}\n"
+            f"idea={idea}\n"
+            f"user_message={text}\n\n"
             "Return ONLY JSON with keys: name, class_name, kind, hpp, cpp."
         )
         try:
@@ -180,7 +203,7 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
             )
             content = resp.content if hasattr(resp, "content") else str(resp)
             data = _parse_codegen_json(str(content))
-            name = str(data.get("name") or _guess_name(text)).lower()
+            name = str(data.get("name") or preferred_name).lower()
             AlgocraftClient.validate_strategy_name(name)
             class_name = str(data.get("class_name") or snake_to_pascal(name))
             hpp = str(data.get("hpp") or "")
@@ -194,11 +217,13 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
                 "hpp": hpp,
                 "cpp": cpp,
                 "source": "llm",
+                "ticker": prior.get("ticker") or draft.get("ticker"),
+                "idea": idea,
             }
-        except Exception as exc:  # noqa: BLE001 — fall back to template
-            name = _guess_name(text)
+        except Exception as exc:  # noqa: BLE001
+            name = preferred_name
             class_name = snake_to_pascal(name)
-            src = _template_sources(name, class_name, text)
+            src = _template_sources(name, class_name, idea)
             chosen = {
                 "name": name,
                 "class_name": class_name,
@@ -207,12 +232,37 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
                 "cpp": src["cpp"],
                 "source": "template_fallback",
                 "design_error": str(exc),
+                "ticker": prior.get("ticker") or draft.get("ticker"),
+                "idea": idea,
             }
+
+    draft = {
+        **draft,
+        "active": True,
+        "status": "designing",
+        "name": chosen["name"],
+        "ticker": chosen.get("ticker") or draft.get("ticker"),
+        "idea": idea,
+    }
 
     return {
         "chosen": chosen,
+        "create_draft": draft,
         "compile_attempts": 0,
         "max_iterations": state.get("max_iterations") or settings.agent_max_iterations,
         "pending_human": "none",
         "error": None,
+        **thought(
+            "design_code",
+            f"Emitted strategy name={chosen['name']} class={chosen['class_name']} "
+            f"source={chosen.get('source')} ticker={chosen.get('ticker')} "
+            f"(hpp/cpp ready for compile).",
+            phase="decide",
+            data={
+                "name": chosen["name"],
+                "class_name": chosen["class_name"],
+                "source": chosen.get("source"),
+                "ticker": chosen.get("ticker"),
+            },
+        ),
     }

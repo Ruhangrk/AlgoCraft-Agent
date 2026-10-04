@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from app.graph.nodes._common import get_client
 from app.graph.nodes.human_gate import require_pending
 from app.graph.state import AgentState
+from app.graph.thinking import thought
 
 
 async def promote(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
@@ -19,6 +20,7 @@ async def promote(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             "eval_verdict": "error",
             "pending_human": state.get("pending_human") or "none",
             "cpp_results": state.get("cpp_results") or {},
+            **thought("promote", err, phase="decide"),
         }
 
     client = get_client(config)
@@ -32,6 +34,7 @@ async def promote(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             "pending_human": "promote",
             "cpp_results": {"ok": False, "error": str(exc)},
             "feedback": str(exc),
+            **thought("promote", f"C++ promote failed: {exc}", phase="result"),
         }
 
     note = str(
@@ -52,4 +55,10 @@ async def promote(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             "cpp_path": (raw or {}).get("cpp_path"),
             "id": (raw or {}).get("id"),
         },
+        **thought(
+            "promote",
+            f"Promoted `{name}` (enabled=0). Next gate=activate. {note}",
+            phase="result",
+            data={"name": name, "enabled": False},
+        ),
     }
