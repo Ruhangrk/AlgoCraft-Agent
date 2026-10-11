@@ -13,6 +13,11 @@ from app.llm.catalog import load_catalog
 
 _OPENAI_COMPAT = frozenset({"deepseek", "openrouter", "groq"})
 
+# Reasoning models (e.g. groq openai/gpt-oss-*) burn completion budget on
+# reasoning tokens; too-low max → empty content (finish_reason=length).
+# Groq free tier also counts max_tokens against TPM (~8k), so stay ≤4k.
+_DEFAULT_MAX_TOKENS = 4096
+
 
 class LlmConfigError(RuntimeError):
     """Missing key or unsupported provider."""
@@ -35,18 +40,25 @@ def _build_chat_model(provider: str, model: str, temperature: float) -> BaseChat
     if provider in _OPENAI_COMPAT:
         if not spec.base_url:
             raise LlmConfigError(f"provider {provider} requires base_url in catalog")
-        return ChatOpenAI(
-            model=model,
-            api_key=api_key,
-            base_url=spec.base_url,
-            temperature=temperature,
-        )
+        kwargs: dict = {
+            "model": model,
+            "api_key": api_key,
+            "base_url": spec.base_url,
+            "temperature": temperature,
+            "max_tokens": _DEFAULT_MAX_TOKENS,
+        }
+        # gpt-oss reasoning can consume the entire completion budget → empty
+        # content. Prefer low effort for agent tool/JSON turns.
+        if provider == "groq" and "gpt-oss" in model:
+            kwargs["extra_body"] = {"reasoning_effort": "low"}
+        return ChatOpenAI(**kwargs)
 
     if provider == "gemini":
         return ChatGoogleGenerativeAI(
             model=model,
             google_api_key=api_key,
             temperature=temperature,
+            max_output_tokens=_DEFAULT_MAX_TOKENS,
         )
 
     raise LlmConfigError(f"unsupported provider: {provider}")

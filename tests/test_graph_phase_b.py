@@ -121,18 +121,26 @@ async def test_phase_b_llm_fix_retries_then_ok() -> None:
         async def ainvoke(self, messages):  # noqa: ANN001
             self.calls += 1
             text = " ".join(str(getattr(m, "content", m)) for m in messages)
+            # Minimal sources that pass validate_strategy_sources (sandbox compile is mocked).
+            good_hpp = (
+                "#pragma once\n"
+                '#include "algocraft/strategies/strategy.hpp"\n'
+                "class MyMeanRevert final : public Strategy {\n"
+                "public:\n"
+                "  void on_bar(const Bar&) override {}\n"
+                "};\n"
+            )
+            good_cpp = '#include "algocraft/strategies/my_mean_revert.hpp"\n'
             if "Fix the strategy" in text or "Compiler log" in text:
-                payload = {
-                    "hpp": "#pragma once\n#include \"algocraft/strategies/strategy.hpp\"\n",
-                    "cpp": '// fixed\n#include "algocraft/strategies/my_mean_revert.hpp"\n',
-                }
+                payload = {"hpp": good_hpp, "cpp": good_cpp}
                 return AIMessage(content=json.dumps(payload))
             payload = {
                 "name": "my_mean_revert",
                 "class_name": "MyMeanRevert",
                 "kind": "strategy",
+                # Intentionally invalid until compile_loop asks for a fix.
                 "hpp": "#pragma once\n",
-                "cpp": "#include \"algocraft/strategies/my_mean_revert.hpp\"\n",
+                "cpp": '#include "algocraft/strategies/my_mean_revert.hpp"\n',
             }
             return AIMessage(content=json.dumps(payload))
 

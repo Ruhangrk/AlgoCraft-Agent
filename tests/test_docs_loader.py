@@ -17,6 +17,7 @@ def test_codegen_context_includes_shape() -> None:
     assert "Generated strategy shape" in ctx
     assert "Strategy interface" in ctx
     assert "pitfalls" in ctx.lower() or "Float money" in ctx
+    assert "Quantity" in ctx or "from_shares" in ctx
 
 
 def test_path_escape_rejected() -> None:

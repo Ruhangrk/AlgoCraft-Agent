@@ -7,6 +7,7 @@ from typing import Literal
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app.graph.nodes._common import logged_node
 from app.graph.nodes.compile_loop import compile_loop
 from app.graph.nodes.create_interview import create_interview
 from app.graph.nodes.design_code import design_code
@@ -18,6 +19,9 @@ from app.graph.nodes.research import research
 from app.graph.nodes.respond import respond
 from app.graph.nodes.route import route_intent
 from app.graph.state import AgentState
+from app.logging_setup import get_logger
+
+log = get_logger("app.graph")
 
 
 def _route_after_router(
@@ -55,16 +59,17 @@ def _route_after_evaluate(state: AgentState) -> Literal["propose", "respond"]:
 
 def build_graph() -> CompiledStateGraph:
     g: StateGraph = StateGraph(AgentState)
-    g.add_node("route", route_intent)
-    g.add_node("research", research)
-    g.add_node("discuss", discuss)
-    g.add_node("create_interview", create_interview)
-    g.add_node("propose", propose)
-    g.add_node("execute", execute)
-    g.add_node("evaluate", evaluate_node)
-    g.add_node("design_code", design_code)
-    g.add_node("compile_loop", compile_loop)
-    g.add_node("respond", respond)
+    g.add_node("route", logged_node("route", route_intent))
+    g.add_node("research", logged_node("research", research))
+    g.add_node("discuss", logged_node("discuss", discuss))
+    g.add_node("create_interview", logged_node("create_interview", create_interview))
+    g.add_node("propose", logged_node("propose", propose))
+    g.add_node("execute", logged_node("execute", execute))
+    g.add_node("evaluate", logged_node("evaluate", evaluate_node))
+    g.add_node("design_code", logged_node("design_code", design_code))
+    g.add_node("compile_loop", logged_node("compile_loop", compile_loop))
+    g.add_node("respond", logged_node("respond", respond))
+    log.debug("graph compiled with debug node wrappers")
 
     g.add_edge(START, "route")
     g.add_conditional_edges(

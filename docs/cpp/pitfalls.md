@@ -17,3 +17,4 @@ Avoid these; they cause compile failures, zero fills, or bad live behavior.
 13. **Wall-clock / string times in C++** — use `ist_minute_of_day` / nanos.
 14. **Sell qty ≠ position** — flatten with `pf.position`, not a stale stored qty unless you track carefully.
 15. **Ignoring compile `log`** — fix from compiler stderr; do not reshuffle randomly past 5 attempts.
+16. **`Quantity{n}`** — ctor is private; always `Quantity::from_shares(n)`.

@@ -10,7 +10,10 @@ from langchain_core.messages import HumanMessage
 from app.config import get_settings
 from app.graph.graph import get_graph
 from app.llm.factory import get_chat_model
+from app.logging_setup import get_logger
 from app.tools.algocraft_client import AlgocraftClient
+
+log = get_logger("app.graph.runner")
 
 
 async def run_phase_a(
@@ -42,8 +45,16 @@ async def run_phase_a(
             llm = None
 
     graph = get_graph()
+    log.info(
+        "graph turn start session=%s provider=%s model=%s llm=%s msg=%r",
+        session_id or "-",
+        provider or "-",
+        model or "-",
+        "yes" if llm is not None else "no",
+        (message[:120] + "…") if len(message) > 120 else message,
+    )
     try:
-        return await graph.ainvoke(
+        result = await graph.ainvoke(
             {
                 "messages": [HumanMessage(content=message)],
                 "user_jwt": user_jwt,
@@ -59,6 +70,14 @@ async def run_phase_a(
             },
             config={"configurable": {"algocraft": client, "llm": llm}},
         )
+        log.info(
+            "graph turn done session=%s intent=%s verdict=%s error=%s",
+            session_id or "-",
+            result.get("intent"),
+            result.get("eval_verdict"),
+            result.get("error"),
+        )
+        return result
     finally:
         if owns_client:
             await client.aclose()

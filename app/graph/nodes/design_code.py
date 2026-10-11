@@ -10,11 +10,15 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.config import get_settings
-from app.graph.nodes._common import get_llm, last_user_text
+from app.graph.nodes._common import get_llm, last_user_text, llm_ainvoke, llm_content_text
 from app.graph.state import AgentState
-from app.llm.prompts import DESIGN_CODE_SYSTEM
+from app.llm.prompts import CODEGEN_COMPACT_RULES, DESIGN_CODE_SYSTEM
+from app.graph.nodes.strategy_sources import (
+    ensure_required_includes,
+    patch_common_llm_cpp_mistakes,
+    validate_strategy_sources,
+)
 from app.tools.algocraft_client import AlgocraftClient
-from app.docs_loader import codegen_context
 from app.graph.thinking import thought
 
 _NAME_HINT = re.compile(
@@ -68,10 +72,24 @@ def _guess_name(text: str) -> str:
     return "agent_smoke_churn"
 
 
-def _template_sources(name: str, class_name: str, idea: str) -> dict[str, str]:
-    """Deterministic no-LLM smoke strategy (1-share churn before 15:15 IST)."""
-    _ = idea
-    hpp = f"""#pragma once
+def _detect_pattern(idea: str) -> str:
+    """Map a short idea to a known simple template (else churn)."""
+    t = idea.lower()
+    if any(k in t for k in ("09:20", "9:20", "after open", "open clip", "single clip")):
+        return "open_clip"
+    if ("two green" in t or "2 green" in t or "consecutive green" in t) and "red" in t:
+        return "two_green"
+    if ("two red" in t or "2 red" in t or "consecutive red" in t) and "green" in t:
+        return "two_red"
+    if "consecutive green" in t or "2 consecutive green" in t:
+        return "two_green"
+    if "consecutive red" in t or "2 consecutive red" in t:
+        return "two_red"
+    return "churn"
+
+
+def _base_hpp(class_name: str, extra_fields: str) -> str:
+    return f"""#pragma once
 
 #include "algocraft/strategies/strategy.hpp"
 
@@ -88,10 +106,113 @@ public:
 
 private:
   StrategyConfig config_{{}};
-}};
+{extra_fields}}};
 
 }}  // namespace algocraft
 """
+
+
+def _template_sources(name: str, class_name: str, idea: str) -> tuple[dict[str, str], str]:
+    """
+    Deterministic simple strategies that always compile against real AlgoCraft headers.
+    Returns (sources, pattern).
+    """
+    pattern = _detect_pattern(idea)
+    if pattern == "two_red":
+        hpp = _base_hpp(class_name, "  int red_streak_{0};\n")
+        on_bar = f"""
+void {class_name}::on_bar(const BarEvent& bar, const PortfolioView& pf,
+                          std::vector<OrderIntent>& out) {{
+  if (bar.symbol_id != config_.symbol_id || bar.resolution != BarResolution::OneMin) return;
+  const int minute = ist_minute_of_day(bar.timestamp);
+  if (minute >= kFlattenMin) {{
+    if (pf.position.shares() > 0)
+      out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
+    red_streak_ = 0;
+    return;
+  }}
+  const bool red = bar.close.paise() < bar.open.paise();
+  const bool green = bar.close.paise() > bar.open.paise();
+  if (pf.position.shares() == 0) {{
+    red_streak_ = red ? red_streak_ + 1 : 0;
+    if (red_streak_ >= 2) {{
+      out.push_back(make_intent(kSid, config_.symbol_id, Side::Buy, Quantity::from_shares(1)));
+      red_streak_ = 0;
+    }}
+  }} else if (green) {{
+    out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
+    red_streak_ = 0;
+  }}
+}}
+"""
+    elif pattern == "two_green":
+        hpp = _base_hpp(class_name, "  int green_streak_{0};\n")
+        on_bar = f"""
+void {class_name}::on_bar(const BarEvent& bar, const PortfolioView& pf,
+                          std::vector<OrderIntent>& out) {{
+  if (bar.symbol_id != config_.symbol_id || bar.resolution != BarResolution::OneMin) return;
+  const int minute = ist_minute_of_day(bar.timestamp);
+  if (minute >= kFlattenMin) {{
+    if (pf.position.shares() > 0)
+      out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
+    green_streak_ = 0;
+    return;
+  }}
+  const bool green = bar.close.paise() > bar.open.paise();
+  const bool red = bar.close.paise() < bar.open.paise();
+  if (pf.position.shares() == 0) {{
+    green_streak_ = green ? green_streak_ + 1 : 0;
+    if (green_streak_ >= 2) {{
+      out.push_back(make_intent(kSid, config_.symbol_id, Side::Buy, Quantity::from_shares(1)));
+      green_streak_ = 0;
+    }}
+  }} else if (red) {{
+    out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
+    green_streak_ = 0;
+  }}
+}}
+"""
+    elif pattern == "open_clip":
+        hpp = _base_hpp(class_name, "  bool entered_{false};\n")
+        on_bar = f"""
+void {class_name}::on_bar(const BarEvent& bar, const PortfolioView& pf,
+                          std::vector<OrderIntent>& out) {{
+  if (bar.symbol_id != config_.symbol_id || bar.resolution != BarResolution::OneMin) return;
+  const int minute = ist_minute_of_day(bar.timestamp);
+  if (minute >= kFlattenMin) {{
+    if (pf.position.shares() > 0)
+      out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
+    return;
+  }}
+  if (!entered_ && minute >= kEntryMin && pf.position.shares() == 0) {{
+    out.push_back(make_intent(kSid, config_.symbol_id, Side::Buy, Quantity::from_shares(1)));
+    entered_ = true;
+  }}
+}}
+"""
+    else:
+        pattern = "churn"
+        hpp = _base_hpp(class_name, "")
+        on_bar = f"""
+void {class_name}::on_bar(const BarEvent& bar, const PortfolioView& pf,
+                          std::vector<OrderIntent>& out) {{
+  if (bar.symbol_id != config_.symbol_id || bar.resolution != BarResolution::OneMin) return;
+  const int minute = ist_minute_of_day(bar.timestamp);
+  if (minute >= kFlattenMin) {{
+    if (pf.position.shares() > 0)
+      out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
+    return;
+  }}
+  if (pf.position.shares() > 0)
+    out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
+  out.push_back(make_intent(kSid, config_.symbol_id, Side::Buy, Quantity::from_shares(1)));
+}}
+"""
+
+    extras = ""
+    if pattern == "open_clip":
+        extras = "constexpr int kEntryMin = 9 * 60 + 20;  // 09:20 IST\n"
+
     cpp = f"""#include "algocraft/strategies/{name}.hpp"
 
 #include "algocraft/domain/bar_resolution.hpp"
@@ -102,37 +223,19 @@ namespace algocraft {{
 namespace {{
 constexpr StrategyId kSid = StrategyId::from(9001);
 constexpr int kFlattenMin = 15 * 60 + 15;  // 15:15 IST
-}}
+{extras}}}
 
 void {class_name}::configure(const StrategyConfig& config, IndicatorLibrary&) {{
   config_ = config;
 }}
-
-void {class_name}::on_bar(const BarEvent& bar, const PortfolioView& pf,
-                          std::vector<OrderIntent>& out) {{
-  if (bar.symbol_id != config_.symbol_id || bar.resolution != BarResolution::OneMin) {{
-    return;
-  }}
-  const int minute = ist_minute_of_day(bar.timestamp);
-  if (minute >= kFlattenMin) {{
-    if (pf.position.shares() > 0) {{
-      out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
-    }}
-    return;
-  }}
-  if (pf.position.shares() > 0) {{
-    out.push_back(make_intent(kSid, config_.symbol_id, Side::Sell, pf.position));
-  }}
-  out.push_back(make_intent(kSid, config_.symbol_id, Side::Buy, Quantity{{1}}));
-}}
-
+{on_bar}
 StrategyMetadata {class_name}::metadata() const {{
   return {{"{name}", "1.0.0", TradingMode::Mis, BarResolution::OneMin, {{}}}};
 }}
 
 }}  // namespace algocraft
 """
-    return {"hpp": hpp, "cpp": cpp}
+    return {"hpp": hpp, "cpp": cpp}, pattern
 
 
 def _parse_codegen_json(raw: str) -> dict[str, Any]:
@@ -150,7 +253,6 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
     text = last_user_text(state)
     settings = get_settings()
     llm = get_llm(config)
-    docs = codegen_context()
     draft = dict(state.get("create_draft") or {})
     prior = dict(state.get("chosen") or {})
 
@@ -163,8 +265,24 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
         preferred_name = _guess_name(text)
 
     idea = str(prior.get("idea") or draft.get("idea") or text)
+    pattern = _detect_pattern(idea)
+
+    def _from_template(name: str, class_name: str, *, source: str) -> dict[str, Any]:
+        src, used_pattern = _template_sources(name, class_name, idea)
+        return {
+            "name": name,
+            "class_name": class_name,
+            "kind": "strategy",
+            "hpp": src["hpp"],
+            "cpp": src["cpp"],
+            "source": source,
+            "pattern": used_pattern,
+            "ticker": prior.get("ticker") or draft.get("ticker"),
+            "idea": idea,
+        }
 
     chosen: dict[str, Any]
+    # LLM-first when available. Pattern/churn templates are fallback only.
     if llm is None:
         name = preferred_name
         try:
@@ -172,69 +290,82 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
         except ValueError:
             name = _guess_name(text)
         class_name = str(prior.get("class_name") or snake_to_pascal(name))
-        src = _template_sources(name, class_name, idea)
-        chosen = {
-            "name": name,
-            "class_name": class_name,
-            "kind": "strategy",
-            "hpp": src["hpp"],
-            "cpp": src["cpp"],
-            "source": "template",
-            "ticker": prior.get("ticker") or draft.get("ticker"),
-            "idea": idea,
-        }
+        src_label = "template_pattern" if pattern != "churn" else "template"
+        chosen = _from_template(name, class_name, source=src_label)
     else:
+        # Compact rules only — full docs/cpp dumps exhaust Groq TPM / max_tokens.
         prompt = (
-            f"{DESIGN_CODE_SYSTEM}\n\n"
-            f"## C++ docs\n{docs}\n\n"
+            f"## Rules\n{CODEGEN_COMPACT_RULES.strip()}\n\n"
             f"## Requirements\n"
             f"preferred_name={preferred_name}\n"
             f"ticker={prior.get('ticker') or draft.get('ticker')}\n"
             f"idea={idea}\n"
             f"user_message={text}\n\n"
+            "Implement the idea above (not a generic churn smoke test).\n"
             "Return ONLY JSON with keys: name, class_name, kind, hpp, cpp."
         )
-        try:
-            resp = await llm.ainvoke(
-                [
-                    SystemMessage(content=DESIGN_CODE_SYSTEM),
-                    HumanMessage(content=prompt),
-                ]
-            )
-            content = resp.content if hasattr(resp, "content") else str(resp)
-            data = _parse_codegen_json(str(content))
-            name = str(data.get("name") or preferred_name).lower()
-            AlgocraftClient.validate_strategy_name(name)
-            class_name = str(data.get("class_name") or snake_to_pascal(name))
-            hpp = str(data.get("hpp") or "")
-            cpp = str(data.get("cpp") or "")
-            if not hpp.strip() or not cpp.strip():
-                raise ValueError("LLM omitted hpp/cpp")
-            chosen = {
-                "name": name,
-                "class_name": class_name,
-                "kind": "strategy",
-                "hpp": hpp,
-                "cpp": cpp,
-                "source": "llm",
-                "ticker": prior.get("ticker") or draft.get("ticker"),
-                "idea": idea,
-            }
-        except Exception as exc:  # noqa: BLE001
+        bound = llm.bind(max_tokens=5500) if hasattr(llm, "bind") else llm
+        chosen = {}
+        last_err = "design failed"
+        for attempt in (1, 2, 3):
+            human = prompt
+            if attempt == 2 and "empty" in last_err.lower():
+                human += (
+                    "\n\nRETRY: previous reply was empty/truncated. "
+                    "Emit complete JSON now with short C++. No preamble."
+                )
+            elif attempt >= 2:
+                human += (
+                    f"\n\nRETRY ({attempt}): previous sources rejected: {last_err}\n"
+                    "Fix by including real strategy.hpp and AlgoCraft types only."
+                )
+            try:
+                resp = await llm_ainvoke(
+                    bound,
+                    [
+                        SystemMessage(content=DESIGN_CODE_SYSTEM),
+                        HumanMessage(content=human),
+                    ],
+                    label=f"design_code.attempt{attempt}",
+                )
+                content = llm_content_text(getattr(resp, "content", resp))
+                meta = dict(getattr(resp, "response_metadata", None) or {})
+                if not content:
+                    raise ValueError(
+                        "LLM returned empty content "
+                        f"(finish_reason={meta.get('finish_reason')!r})"
+                    )
+                data = _parse_codegen_json(content)
+                name = str(data.get("name") or preferred_name).lower()
+                AlgocraftClient.validate_strategy_name(name)
+                class_name = str(data.get("class_name") or snake_to_pascal(name))
+                hpp = str(data.get("hpp") or "")
+                cpp = str(data.get("cpp") or "")
+                if not hpp.strip() or not cpp.strip():
+                    raise ValueError("LLM omitted hpp/cpp")
+                cpp = patch_common_llm_cpp_mistakes(ensure_required_includes(name, cpp))
+                verr = validate_strategy_sources(name, hpp, cpp)
+                if verr:
+                    raise ValueError(verr)
+                chosen = {
+                    "name": name,
+                    "class_name": class_name,
+                    "kind": "strategy",
+                    "hpp": hpp,
+                    "cpp": cpp,
+                    "source": "llm",
+                    "ticker": prior.get("ticker") or draft.get("ticker"),
+                    "idea": idea,
+                }
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = str(exc)
+                chosen = {}
+        if not chosen:
             name = preferred_name
             class_name = snake_to_pascal(name)
-            src = _template_sources(name, class_name, idea)
-            chosen = {
-                "name": name,
-                "class_name": class_name,
-                "kind": "strategy",
-                "hpp": src["hpp"],
-                "cpp": src["cpp"],
-                "source": "template_fallback",
-                "design_error": str(exc),
-                "ticker": prior.get("ticker") or draft.get("ticker"),
-                "idea": idea,
-            }
+            chosen = _from_template(name, class_name, source="template_fallback")
+            chosen["design_error"] = last_err
 
     draft = {
         **draft,
@@ -245,6 +376,14 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
         "idea": idea,
     }
 
+    note = (
+        f"Emitted strategy name={chosen['name']} class={chosen['class_name']} "
+        f"source={chosen.get('source')} ticker={chosen.get('ticker')} "
+        f"(hpp/cpp ready for compile)."
+    )
+    if chosen.get("design_error"):
+        note += f" design_error={chosen['design_error'][:300]}"
+
     return {
         "chosen": chosen,
         "create_draft": draft,
@@ -252,17 +391,21 @@ async def design_code(state: AgentState, config: RunnableConfig) -> dict[str, An
         "max_iterations": state.get("max_iterations") or settings.agent_max_iterations,
         "pending_human": "none",
         "error": None,
+        "feedback": (
+            f"design used template_fallback: {chosen['design_error']}"
+            if chosen.get("source") == "template_fallback" and chosen.get("design_error")
+            else None
+        ),
         **thought(
             "design_code",
-            f"Emitted strategy name={chosen['name']} class={chosen['class_name']} "
-            f"source={chosen.get('source')} ticker={chosen.get('ticker')} "
-            f"(hpp/cpp ready for compile).",
+            note,
             phase="decide",
             data={
                 "name": chosen["name"],
                 "class_name": chosen["class_name"],
                 "source": chosen.get("source"),
                 "ticker": chosen.get("ticker"),
+                "design_error": chosen.get("design_error"),
             },
         ),
     }

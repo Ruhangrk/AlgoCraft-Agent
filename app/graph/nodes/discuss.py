@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.config import REPO_ROOT
-from app.graph.nodes._common import get_client, get_llm, last_user_text
+from app.graph.nodes._common import get_client, get_llm, last_user_text, llm_ainvoke, llm_content_text
 from app.graph.nodes.entities import resolve_strategy_mention
 from app.graph.state import AgentState
 from app.graph.thinking import thought
@@ -81,7 +81,8 @@ async def discuss(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         doc_text = doc or f"(no local doc for {matched})"
         if llm is not None:
             try:
-                resp = await llm.ainvoke(
+                resp = await llm_ainvoke(
+                    llm,
                     [
                         SystemMessage(content=_DISCUSS_SYS),
                         HumanMessage(
@@ -90,9 +91,10 @@ async def discuss(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                                 f"Doc:\n{doc_text[:5000]}\n"
                             )
                         ),
-                    ]
+                    ],
+                    label="discuss",
                 )
-                summary = str(getattr(resp, "content", resp)).strip()
+                summary = llm_content_text(getattr(resp, "content", resp))
             except Exception:  # noqa: BLE001
                 summary = (
                     f"Let's talk about **`{matched}`**.\n\n"

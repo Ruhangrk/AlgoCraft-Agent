@@ -13,7 +13,7 @@ Select environment **AlgoCraft-Agent Local**.
 # C++ :8080
 # Agent :
 cd AlgoCraft-Agent
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8100
+uv run python -m app --log-level info
 ```
 
 Set `cpp_username` / `cpp_password` in the environment to a real AlgoCraft user (defaults match `.env.example`: `agent_bot` / `changeme`).

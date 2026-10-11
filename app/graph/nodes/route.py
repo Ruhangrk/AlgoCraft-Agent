@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.config import get_settings
-from app.graph.nodes._common import get_llm, last_user_text, llm_content_text
+from app.graph.nodes._common import get_llm, last_user_text, llm_ainvoke, llm_content_text
 from app.graph.nodes.entities import (
     extract_strategy_likes,
     extract_tickers,
@@ -88,11 +88,13 @@ async def _llm_route(
     Rate/quota errors are re-raised so chat API can return llm_rate_limited.
     """
     try:
-        resp = await llm.ainvoke(
+        resp = await llm_ainvoke(
+            llm,
             [
                 SystemMessage(content=_ROUTE_LLM_SYS),
                 HumanMessage(content=text),
-            ]
+            ],
+            label="route",
         )
     except Exception as exc:  # noqa: BLE001 — provider/network failures
         if is_rate_limit_error(exc):

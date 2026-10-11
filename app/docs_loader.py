@@ -43,12 +43,17 @@ def load_docs(paths: list[str], *, missing_ok: bool = False) -> str:
 
 
 def codegen_context() -> str:
-    """Default Phase B context: INDEX + shape + interface + pitfalls."""
+    """
+    Compact Phase B context for sandbox codegen.
+
+    Keep this short: Groq TPM budgets count prompt + max_tokens. Prefer shape +
+    pitfalls + units over the full INDEX/interface dump.
+    """
     return load_docs(
         [
-            "docs/cpp/INDEX.md",
             "docs/cpp/codegen_shape.md",
             "docs/cpp/strategy_interface.md",
             "docs/cpp/pitfalls.md",
+            "docs/cpp/units_and_types.md",
         ]
     )

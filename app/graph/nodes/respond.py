@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.graph.nodes._common import get_llm, last_user_text, llm_content_text
+from app.graph.nodes._common import get_llm, last_user_text, llm_ainvoke, llm_content_text
 from app.graph.state import AgentState
 from app.graph.thinking import thought, thoughts
 from app.llm.errors import is_rate_limit_error
@@ -147,9 +147,13 @@ def _build_draft(
 
     if metrics.get("activated"):
         name = metrics.get("name") or chosen.get("name") or "?"
+        reload = metrics.get("reload")
         summary = (
-            f"Activated `{name}` in catalog (enabled=1). "
-            "Rebuild + `scripts/serve --restart` so the registry loads it."
+            f"Activated `{name}` in catalog (enabled=1"
+            + (f", reload={reload}" if reload else "")
+            + ").\n"
+            "Engine rebuild+restart is scheduled; API may drop briefly — "
+            "poll `GET /strategies` when serve is back."
         )
         if feedback:
             summary += f"\n{feedback}"
@@ -158,7 +162,9 @@ def _build_draft(
         summary = (
             f"Promoted `{name}` (catalog enabled=0).\n"
             f"Paths: `{metrics.get('hpp_path')}`, `{metrics.get('cpp_path')}`.\n"
-            "Confirm **activate** when ready, then rebuild + restart serve."
+            "Confirm activate via `APPROVE_ACTIVATE` or "
+            '`POST .../confirm` `{"action":"activate"}` '
+            "(activate schedules rebuild+restart)."
         )
     elif intent == "create" and state.get("interview_prompt"):
         summary = str(state["interview_prompt"])
@@ -167,12 +173,25 @@ def _build_draft(
     elif intent in ("create", "codegen_strategy") and chosen.get("name"):
         name = chosen.get("name") or "?"
         if verdict == "need_human" and pending == "promote":
+            src = chosen.get("source") or "unknown"
             summary = (
                 f"Compiled strategy `{name}` "
-                f"(attempts={state.get('compile_attempts')}).\n"
+                f"(attempts={state.get('compile_attempts')}, source={src}).\n"
                 f"Ticker context: `{draft.get('ticker') or chosen.get('ticker') or '—'}`.\n"
-                "Next: confirm **promote** (enabled=0). Activate + rebuild/restart come after."
+                "Next: confirm promote via `POST /v1/sessions/{id}/confirm` "
+                'with `{"action":"promote"}`, or chat `APPROVE_PROMOTE` '
+                "(enabled=0). Then `APPROVE_ACTIVATE` "
+                "(schedules rebuild+restart; poll `/strategies` after)."
             )
+            if src == "template_fallback":
+                summary += (
+                    "\nNote: codegen fell back to a smoke template — logic may not "
+                    "match your idea; re-create if you need the described rules."
+                )
+                if chosen.get("design_error"):
+                    summary += f"\nDesign error: `{chosen['design_error'][:240]}`"
+            elif feedback and "template_fallback" in str(feedback):
+                summary += f"\n{feedback}"
         else:
             summary = f"Create `{name}`: verdict={verdict}."
             if error:
@@ -275,7 +294,8 @@ async def _polish_with_llm(
     card: dict[str, Any],
     error: str | None,
 ) -> str:
-    resp = await llm.ainvoke(
+    resp = await llm_ainvoke(
+        llm,
         [
             SystemMessage(content=RESPOND_SYSTEM),
             HumanMessage(
@@ -288,7 +308,8 @@ async def _polish_with_llm(
                     error=error,
                 )
             ),
-        ]
+        ],
+        label="respond.polish",
     )
     text = llm_content_text(getattr(resp, "content", resp))
     if not text:

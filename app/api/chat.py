@@ -14,9 +14,11 @@ from app.api.sessions import _resolve_llm
 from app.graph.lifecycle import run_confirm
 from app.graph.runner import run_phase_a
 from app.llm.errors import classify_llm_error
+from app.logging_setup import get_logger
 from app.store.sessions import Session, get_session_store
 
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
+log = get_logger("app.api.chat")
 
 _APPROVE = {
     "APPROVE_PROMOTE": "promote",
@@ -176,6 +178,13 @@ async def post_chat(body: ChatRequest) -> ChatResponse:
     session.temperature = temperature
     store.update(session)
 
+    log.info(
+        "POST /v1/chat session=%s provider=%s model=%s temp=%s",
+        body.session_id,
+        provider,
+        model,
+        temperature,
+    )
     try:
         approve = _APPROVE.get(body.message.strip().upper())
         if approve:

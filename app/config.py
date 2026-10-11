@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,7 +59,20 @@ class Settings(BaseSettings):
     agent_http_long_timeout_sec: float = 600
     agent_compile_timeout_sec: float = 180
 
+    # info < debug (node flow) < trace (LLM prompts/responses + HTTP detail)
+    agent_log_level: Literal["info", "debug", "trace"] = "info"
+
     llm_catalog_path: Path = Field(default_factory=lambda: REPO_ROOT / "config" / "llm_catalog.yaml")
+
+    @field_validator("agent_log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, value: object) -> str:
+        if value is None or value == "":
+            return "info"
+        key = str(value).strip().lower()
+        if key not in ("info", "debug", "trace"):
+            return "info"
+        return key
 
 
 @lru_cache

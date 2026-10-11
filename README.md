@@ -1,41 +1,88 @@
 # AlgoCraft-Agent
 
-Python FastAPI + LangGraph agent for AlgoCraft (research, backtest/hist runs, strategy codegen).
+FastAPI + LangGraph service that turns natural-language strategy requests into AlgoCraft C++ strategies: design, compile, iterate on errors, and run backtests against the C++ engine.
 
-## Quick start (Part 1)
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+
+## Setup
 
 ```bash
 cd AlgoCraft-Agent
 uv sync --group dev
 
-# Copy secrets outside the repo, fill keys, then:
 cp .env.example .env
-# edit AGENT_SECRETS_FILE=/absolute/path/to/your/llm.secrets.env
-
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8100
+# edit AGENT_SECRETS_FILE and ALGOCRAFT_* as needed
 ```
 
-- `GET /healthz` — agent up + C++ reachability  
-- `GET /v1/llm/catalog` — provider/model dropdowns (no API keys)
+LLM keys stay outside the repo:
 
-Tests: `uv run pytest`
+1. Copy `llm.secrets.env.example` somewhere outside this tree (for example `~/.config/AlgoCraft_Agent/llm.secrets.env`).
+2. Fill in the provider keys you use (`GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`).
+3. Point `AGENT_SECRETS_FILE` in `.env` at that absolute path.
 
-## Secrets
+Allowlisted models live in [`config/llm_catalog.yaml`](config/llm_catalog.yaml).
 
-1. `cp llm.secrets.env.example ~/secrets/algocraft-llm.env` (path of your choice, **outside** this repo)  
-2. Fill `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` / `GROQ_API_KEY`  
-3. Set `AGENT_SECRETS_FILE` in `.env` to that absolute path  
+The C++ engine should be reachable at the URL in `ALGOCRAFT_API_URL` (default `http://127.0.0.1:8080`) with credentials matching `ALGOCRAFT_USER` / `ALGOCRAFT_PASS`. Chat and docs Q&A can run without a live engine; compile/backtest need it.
 
-Allowlisted models: [`config/llm_catalog.yaml`](config/llm_catalog.yaml).
+## Run
 
-## C++ knowledge docs
+```bash
+uv run python -m app --log-level info
+```
 
-Agent-facing curated docs live under [`docs/cpp/`](docs/cpp/):
+| Flag | Values | Default |
+|------|--------|---------|
+| `--log-level` / `-l` | `info`, `debug`, `trace` | `info` |
+| `--host` | bind address | `127.0.0.1` (or `AGENT_HOST`) |
+| `--port` | bind port | `8100` (or `AGENT_PORT`) |
 
-- Always share [`docs/cpp/INDEX.md`](docs/cpp/INDEX.md) with the LLM.
-- Fetch at most 2–3 other files from that index per turn.
+Examples:
 
-- How it works now: [`Notes/ARCHITECTURE.md`](Notes/ARCHITECTURE.md)  
-- Code / LangGraph walkthrough: [`Notes/CODE_FLOW.md`](Notes/CODE_FLOW.md)  
-- Build spec / checklist / locked contracts: [`Notes/AI_AGENT.md`](Notes/AI_AGENT.md)  
-- Postman collection: [`postman/`](postman/)
+```bash
+uv run python -m app --log-level debug
+uv run python -m app -l trace --port 8100
+```
+
+| Level | Includes |
+|-------|----------|
+| `info` | Operational logs (chat turns, graph start/end, errors) |
+| `debug` | Everything in `info`, plus graph node enter/exit (flow) |
+| `trace` | Everything in `debug`, plus full LLM prompts/responses and C++ HTTP bodies |
+
+JWT / `Authorization` headers are never logged.
+
+Smoke check:
+
+```bash
+curl -s http://127.0.0.1:8100/healthz
+```
+
+Plain uvicorn also works (`uv run uvicorn app.main:app --host 127.0.0.1 --port 8100`) but has no `--log-level` for app logs; use `python -m app` for that.
+
+## API surface
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/healthz` | Agent up; C++ reachability |
+| `GET` | `/v1/llm/catalog` | Provider/model list (no keys) |
+| `POST` | `/v1/sessions` | Create session (Bearer JWT from C++ login) |
+| `POST` | `/v1/chat` | Chat / strategy turn |
+| `GET` | `/v1/chat/{session_id}/stream` | SSE for the last chat turn |
+| `POST` | `/v1/sessions/{session_id}/confirm` | Confirm pending actions |
+
+Postman collection and local environment: [`postman/`](postman/).
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+## Docs
+
+| Doc | Contents |
+|-----|----------|
+| [`Notes/ARCHITECTURE.md`](Notes/ARCHITECTURE.md) | System design |
+| [`Notes/CODE_FLOW.md`](Notes/CODE_FLOW.md) | LangGraph / request flow |
+| [`Notes/AI_AGENT.md`](Notes/AI_AGENT.md) | Contracts and build checklist |
+| [`docs/cpp/`](docs/cpp/) | Curated C++ knowledge fed to the LLM |

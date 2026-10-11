@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
+import time
 from typing import Any, Self
 
 import httpx
 
 from app.config import get_settings
+from app.logging_setup import get_logger, is_trace_enabled, log_trace, truncate_for_log
+
+log = get_logger("app.tools.algocraft")
 
 _STRATEGY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
@@ -98,11 +104,46 @@ class AlgocraftClient:
         }
         if timeout is not None:
             kw["timeout"] = timeout
+        if is_trace_enabled(log):
+            # Never log Authorization / JWT.
+            safe_json = json.dumps(json, default=str) if json is not None else None
+            log_trace(
+                log,
+                "HTTP %s %s params=%s body=%s",
+                method,
+                path,
+                params,
+                truncate_for_log(safe_json or "", 8_000) if safe_json else None,
+            )
+        t0 = time.perf_counter()
         resp = await self._client.request(**kw)
         try:
             body: Any = resp.json()
         except Exception:
             body = resp.text
+        if is_trace_enabled(log):
+            body_preview = (
+                truncate_for_log(json.dumps(body, default=str), 8_000)
+                if not isinstance(body, str)
+                else truncate_for_log(body, 8_000)
+            )
+            log_trace(
+                log,
+                "HTTP %s %s → %s (%.0fms) body=%s",
+                method,
+                path,
+                resp.status_code,
+                (time.perf_counter() - t0) * 1000,
+                body_preview,
+            )
+        elif log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "HTTP %s %s → %s (%.0fms)",
+                method,
+                path,
+                resp.status_code,
+                (time.perf_counter() - t0) * 1000,
+            )
         if resp.status_code < 200 or resp.status_code >= 300:
             raise AlgocraftApiError(resp.status_code, body)
         return body

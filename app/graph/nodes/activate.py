@@ -11,9 +11,9 @@ from app.graph.nodes.human_gate import require_pending
 from app.graph.state import AgentState
 from app.graph.thinking import thought
 
-_RESTART_NOTE = (
-    "Activated in catalog. Rebuild C++ and run `scripts/serve --restart` "
-    "so the in-process registry loads the new strategy (no dlopen yet)."
+_RELOAD_NOTE = (
+    "Activated in catalog; engine reload scheduled (rebuild + restart). "
+    "API may drop briefly — poll GET /strategies when serve is back."
 )
 
 
@@ -42,7 +42,8 @@ async def activate(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             **thought("activate", f"C++ activate failed: {exc}", phase="result"),
         }
 
-    note = str((raw or {}).get("note") or _RESTART_NOTE)
+    note = str((raw or {}).get("note") or _RELOAD_NOTE)
+    reload = (raw or {}).get("reload")
     return {
         "cpp_results": raw,
         "eval_verdict": "pass",
@@ -54,11 +55,12 @@ async def activate(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             "name": name,
             "enabled": True,
             "id": (raw or {}).get("id"),
+            "reload": reload,
         },
         **thought(
             "activate",
-            f"Activated `{name}` (enabled=1). Rebuild+restart still required. {note}",
+            f"Activated `{name}` (enabled=1, reload={reload!r}). {note}",
             phase="result",
-            data={"name": name, "enabled": True},
+            data={"name": name, "enabled": True, "reload": reload},
         ),
     }

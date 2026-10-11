@@ -11,8 +11,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.config import get_settings
-from app.graph.nodes._common import get_client, get_llm
+from app.graph.nodes._common import get_client, get_llm, llm_ainvoke, llm_content_text
 from app.graph.nodes.design_code import snake_to_pascal
+from app.graph.nodes.strategy_sources import (
+    ensure_required_includes,
+    patch_common_llm_cpp_mistakes,
+    validate_strategy_sources,
+)
 from app.graph.state import AgentState
 from app.graph.thinking import thought
 from app.llm.prompts import COMPILE_FIX_SYSTEM
@@ -67,12 +72,17 @@ async def _llm_fix(
         f"## Current cpp\n```cpp\n{chosen.get('cpp')}\n```\n\n"
         "Return ONLY JSON with keys: hpp, cpp (optional name, class_name)."
     )
-    resp = await llm.ainvoke(
-        [SystemMessage(content=COMPILE_FIX_SYSTEM), HumanMessage(content=prompt)]
+    bound = llm.bind(max_tokens=5500) if hasattr(llm, "bind") else llm
+    resp = await llm_ainvoke(
+        bound,
+        [SystemMessage(content=COMPILE_FIX_SYSTEM), HumanMessage(content=prompt)],
+        label=f"compile_fix.attempt{attempt}",
     )
-    content = resp.content if hasattr(resp, "content") else str(resp)
+    content = llm_content_text(getattr(resp, "content", resp))
+    if not content:
+        return None
     try:
-        return _parse_fix_json(str(content))
+        return _parse_fix_json(content)
     except Exception:  # noqa: BLE001
         return None
 
@@ -122,8 +132,42 @@ async def compile_loop(state: AgentState, config: RunnableConfig) -> dict[str, A
         data={"name": chosen["name"], "max_attempts": max_attempts},
     )
 
+    def _sanitize_cpp() -> None:
+        if not (chosen.get("name") and chosen.get("cpp")):
+            return
+        before = str(chosen["cpp"])
+        after = ensure_required_includes(str(chosen["name"]), before)
+        after = patch_common_llm_cpp_mistakes(after)
+        if after != before:
+            chosen["cpp"] = after
+            note("Applied deterministic cpp sanitize (includes/Price/time).", phase="decide")
+
+    _sanitize_cpp()
+
     while attempts < max_attempts:
         attempts += 1
+        _sanitize_cpp()
+        verr = validate_strategy_sources(
+            str(chosen.get("name") or ""),
+            str(chosen.get("hpp") or ""),
+            str(chosen.get("cpp") or ""),
+        )
+        if verr:
+            note(f"Source validation failed (attempt {attempts}): {verr}", phase="result")
+            last = {"ok": False, "log": verr}
+            if llm is None or attempts >= max_attempts:
+                break
+            note("Asking LLM to rewrite sources to use real AlgoCraft Strategy API.", phase="decide")
+            fixed = await _llm_fix(llm, chosen=chosen, log=verr, attempt=attempts)
+            if fixed:
+                if fixed.get("hpp"):
+                    chosen["hpp"] = str(fixed["hpp"])
+                if fixed.get("cpp"):
+                    chosen["cpp"] = str(fixed["cpp"])
+                if fixed.get("class_name"):
+                    chosen["class_name"] = str(fixed["class_name"])
+            continue
+
         note(f"Compile attempt {attempts}/{max_attempts} → POST /agent/strategies/compile")
         try:
             last = await _try_compile(client, chosen)
@@ -189,8 +233,11 @@ async def compile_loop(state: AgentState, config: RunnableConfig) -> dict[str, A
         note(f"Asking LLM to fix sources from compiler log (attempt {attempts}).", phase="decide")
         fixed = await _llm_fix(llm, chosen=chosen, log=log, attempt=attempts)
         if not fixed:
-            note("LLM fix parse failed — stopping.", phase="result")
-            break
+            note(
+                "LLM fix parse failed — will recompile same sources / retry fix next loop.",
+                phase="result",
+            )
+            continue
         if fixed.get("hpp"):
             chosen["hpp"] = str(fixed["hpp"])
         if fixed.get("cpp"):

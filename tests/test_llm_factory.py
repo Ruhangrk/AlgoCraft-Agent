@@ -23,6 +23,22 @@ def test_openai_compat_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert created["base_url"] == "https://api.deepseek.com"
     assert created["api_key"] == "sk-deepseek"
     assert created["temperature"] == 0.7
+    assert created["max_tokens"] == 4096
+
+
+def test_groq_gpt_oss_sets_low_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "g-key")
+    created: dict = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            created.update(kwargs)
+
+    monkeypatch.setattr("app.llm.factory.ChatOpenAI", FakeChatOpenAI)
+    clear_model_cache()
+    get_chat_model("groq", "openai/gpt-oss-20b")
+    assert created["extra_body"] == {"reasoning_effort": "low"}
+    assert created["max_tokens"] == 4096
 
 
 def test_gemini_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,6 +56,7 @@ def test_gemini_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert created["model"] == "gemini-3.8-flash"
     assert created["google_api_key"] == "gem-key"
     assert created["temperature"] == 0.2
+    assert created["max_output_tokens"] == 4096
 
 
 def test_missing_key(monkeypatch: pytest.MonkeyPatch) -> None:
