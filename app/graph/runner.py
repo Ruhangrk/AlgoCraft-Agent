@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
 from app.config import get_settings
@@ -21,7 +22,7 @@ async def run_phase_a(
     model: str | None = None,
     temperature: float | None = None,
     client: AlgocraftClient | None = None,
-    llm: Any | None = None,
+    llm: BaseChatModel | None = None,
     create_draft: dict[str, Any] | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:

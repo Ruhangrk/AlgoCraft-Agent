@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
@@ -31,7 +32,7 @@ def _parse_fix_json(raw: str) -> dict[str, Any]:
     return data
 
 
-async def _try_compile(client: Any, chosen: dict[str, Any]) -> dict[str, Any]:
+async def _try_compile(client: AlgocraftClient, chosen: dict[str, Any]) -> dict[str, Any]:
     try:
         raw = await client.agent_compile(
             name=str(chosen["name"]),
@@ -43,13 +44,16 @@ async def _try_compile(client: Any, chosen: dict[str, Any]) -> dict[str, Any]:
         return dict(raw) if isinstance(raw, dict) else {"ok": False, "log": str(raw)}
     except AlgocraftApiError as exc:
         body = exc.body if isinstance(exc.body, dict) else {"log": str(exc.body)}
-        if exc.status == 422:
+        # C++ returns 400 + ok:false on compile failure (Crow has no 422 mapping).
+        if exc.status in (400, 422) or (
+            isinstance(body, dict) and body.get("ok") is False and "log" in body
+        ):
             return {**body, "ok": False}
         raise
 
 
 async def _llm_fix(
-    llm: Any,
+    llm: BaseChatModel,
     *,
     chosen: dict[str, Any],
     log: str,

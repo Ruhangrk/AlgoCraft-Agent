@@ -6,11 +6,12 @@ import json
 import re
 from typing import Any
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.config import get_settings
-from app.graph.nodes._common import get_llm, last_user_text
+from app.graph.nodes._common import get_llm, last_user_text, llm_content_text
 from app.graph.nodes.entities import (
     extract_strategy_likes,
     extract_tickers,
@@ -20,6 +21,7 @@ from app.graph.nodes.entities import (
 )
 from app.graph.state import AgentState
 from app.graph.thinking import thought
+from app.llm.errors import is_rate_limit_error
 
 _GREET_RE = re.compile(
     r"^\s*(hi|hello|hey|yo|sup|thanks|thank you|ok|okay|gm|good morning|good evening)"
@@ -75,7 +77,16 @@ def _rules_route(text: str, draft: dict[str, Any]) -> tuple[str, str]:
     return "clarify", "Ambiguous — will ask LLM if available, else clarify"
 
 
-async def _llm_route(llm: Any, text: str) -> tuple[str, str] | None:
+async def _llm_route(
+    llm: BaseChatModel, text: str
+) -> tuple[tuple[str, str] | None, str | None]:
+    """
+    Optional LLM assist when rules say clarify.
+
+    Returns `(hit, soft_error)` where `hit` is `(intent, reason)` on success.
+    Soft failures keep rules `clarify` and explain via `soft_error`.
+    Rate/quota errors are re-raised so chat API can return llm_rate_limited.
+    """
     try:
         resp = await llm.ainvoke(
             [
@@ -83,18 +94,30 @@ async def _llm_route(llm: Any, text: str) -> tuple[str, str] | None:
                 HumanMessage(content=text),
             ]
         )
-        raw = str(getattr(resp, "content", resp)).strip()
+    except Exception as exc:  # noqa: BLE001 — provider/network failures
+        if is_rate_limit_error(exc):
+            raise
+        return None, f"LLM route invoke failed ({type(exc).__name__}: {exc}); keeping clarify"
+
+    try:
+        raw = llm_content_text(getattr(resp, "content", resp))
+        if not raw:
+            return None, "LLM route returned empty content; keeping clarify"
         fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
         if fence:
             raw = fence.group(1).strip()
         data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None, "LLM route JSON was not an object; keeping clarify"
         intent = str(data.get("intent") or "").strip().lower()
         reason = str(data.get("reason") or "llm route")
-        if intent in _VALID:
-            return intent, f"LLM route: {reason}"
-    except Exception:  # noqa: BLE001
-        return None
-    return None
+        if intent not in _VALID:
+            return None, f"LLM route intent={intent!r} not allowed; keeping clarify"
+        return (intent, f"LLM route: {reason}"), None
+    except json.JSONDecodeError as exc:
+        return None, f"LLM route JSON parse failed ({exc}); keeping clarify"
+    except Exception as exc:  # noqa: BLE001 — unexpected response shape
+        return None, f"LLM route parse failed ({type(exc).__name__}: {exc}); keeping clarify"
 
 
 async def route_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
@@ -107,11 +130,23 @@ async def route_intent(state: AgentState, config: RunnableConfig) -> dict[str, A
     llm = get_llm(config)
 
     intent, reason = _rules_route(text, draft)
+    llm_note: str | None = None
 
     if intent == "clarify" and llm is not None:
-        llm_hit = await _llm_route(llm, text)
+        try:
+            llm_hit, llm_note = await _llm_route(llm, text)
+        except Exception as exc:
+            # Rate limits (and any unexpected re-raise) bubble to chat API.
+            if is_rate_limit_error(exc):
+                raise
+            llm_hit, llm_note = None, (
+                f"LLM route unexpected error ({type(exc).__name__}: {exc}); keeping clarify"
+            )
         if llm_hit:
             intent, reason = llm_hit
+            llm_note = None
+        elif llm_note:
+            reason = f"{reason}. {llm_note}"
 
     if intent == "create" and not (draft.get("active") and draft.get("status") == "interviewing"):
         draft = {
@@ -143,6 +178,7 @@ async def route_intent(state: AgentState, config: RunnableConfig) -> dict[str, A
                 "strategies_mentioned": strategy_likes,
                 "topic_strategy": topic,
                 "create_active": bool(draft.get("active")),
+                "llm_assist_error": llm_note,
             },
         ),
     }

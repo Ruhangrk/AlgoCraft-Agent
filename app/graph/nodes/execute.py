@@ -9,10 +9,11 @@ from langchain_core.runnables import RunnableConfig
 from app.graph.nodes._common import get_client
 from app.graph.state import AgentState
 from app.graph.thinking import thought, thoughts
+from app.tools.algocraft_client import AlgocraftClient
 from app.tools.timeutil import ns_to_ist_ymd
 
 
-async def _ensure_bars(client: Any, chosen: dict[str, Any]) -> str | None:
+async def _ensure_bars(client: AlgocraftClient, chosen: dict[str, Any]) -> str | None:
     ticker = chosen.get("ticker")
     if not ticker:
         return None
@@ -96,6 +97,15 @@ async def execute(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                 ),
             }
 
+        missing = [k for k in ("ticker", "strategy", "from_ns", "to_ns", "capital_paise") if k not in chosen]
+        if missing or state.get("error"):
+            err = state.get("error") or f"cannot backtest — missing {', '.join(missing)}"
+            return {
+                "error": err,
+                "cpp_results": {},
+                "workbook_id": int(wid) if wid else None,
+                **thought("execute", err, phase="result"),
+            }
         t_start = thought(
             "execute",
             f"Calling C++ start_backtest strategy={chosen.get('strategy')} "

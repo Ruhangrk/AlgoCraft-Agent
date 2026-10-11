@@ -13,13 +13,26 @@ _TICKER_RE = re.compile(r"\b([A-Z]{1,12}(?:[&.-][A-Z0-9]{1,12})?)\b")
 _TICKER_LOOSE_RE = re.compile(
     r"\b([A-Za-z]{1,12}(?:[&._-][A-Za-z0-9]{1,12})?)\b"
 )
+# Explicit labels / backtest phrasing (allows lowercase asianpaint, reliance, …)
+_LABELED_TICKER_RE = re.compile(
+    r"(?i)\b(?:tickers?|symbol|scrip)\s*[:=]\s*"
+    r"([A-Za-z][A-Za-z0-9]{1,15}(?:[&._-][A-Za-z0-9]{1,12})?)"
+)
+_ON_FOR_TICKER_RE = re.compile(
+    r"(?i)\b(?:on|for)\s+"
+    r"([A-Za-z][A-Za-z0-9]{1,15}(?:[&._-][A-Za-z0-9]{1,12})?)\b"
+)
 _STRATEGY_LIKE_RE = re.compile(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b")
+_LABELED_STRATEGY_RE = re.compile(
+    r"(?i)\b(?:strateg(?:y|ies)|algo)\s*[:=]\s*"
+    r"([A-Za-z][A-Za-z0-9_\- ]{2,64})"
+)
 _DATE_RE = re.compile(
     r"\b(\d{1,2})(?:st|nd|rd|th)?\s+"
     r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
-    r"dec(?:ember)?)\s+"
-    r"(\d{2,4})\b",
+    r"dec(?:ember)?)"
+    r"(?:\s+(\d{2,4}))?\b",
     re.I,
 )
 _ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
@@ -110,6 +123,35 @@ _SKIP_TICKERS = frozenset(
         "OCT",
         "NOV",
         "DEC",
+        # common filler after on/for
+        "LAST",
+        "THE",
+        "A",
+        "AN",
+        "MY",
+        "OUR",
+        "THIS",
+        "THAT",
+        "THESE",
+        "THOSE",
+        "NEXT",
+        "PREV",
+        "TODAY",
+        "DATE",
+        "DETAILS",
+        "STRATEGY",
+        "STRATEGIES",
+        "ROUTER",
+        "SESSION",
+        "SESSIONS",
+        "MINUTE",
+        "MINUTES",
+        "HOUR",
+        "HOURS",
+        "DAY",
+        "DAYS",
+        "WEEK",
+        "WEEKS",
     }
 )
 
@@ -139,37 +181,67 @@ def normalize_ticker(raw: str) -> str:
     return t
 
 
+def _add_ticker(found: list[str], raw: str) -> None:
+    t = normalize_ticker(raw)
+    if t in _SKIP_TICKERS or len(t) < 2:
+        return
+    if t not in found:
+        found.append(t)
+
+
 def extract_tickers(text: str) -> list[str]:
     found: list[str] = []
+    # 1) Explicit "Ticker: asianpaint" / "symbol = RELIANCE"
+    for m in _LABELED_TICKER_RE.findall(text):
+        _add_ticker(found, m)
+    # 2) ALL-CAPS NSE-style tokens (RELIANCE, M&M, …)
     for m in _TICKER_RE.findall(text):
-        t = normalize_ticker(m)
-        if t in _SKIP_TICKERS or len(t) < 2:
-            continue
-        if t not in found:
-            found.append(t)
-    # lowercase m&m etc.
+        _add_ticker(found, m)
+    # 3) "on/for <ticker>" allowing lowercase
+    for m in _ON_FOR_TICKER_RE.findall(text):
+        _add_ticker(found, m)
+    # 4) lowercase m&m / bajaj-auto style only (needs separator).
+    # Underscore-only tokens are strategy-like (hammer_reversal), not tickers.
     for m in _TICKER_LOOSE_RE.findall(text):
+        if "_" in m and not any(c in m for c in "&.-"):
+            continue
         if not any(c in m for c in "&._-"):
             continue
-        t = normalize_ticker(m)
-        if t in _SKIP_TICKERS or len(t) < 2:
-            continue
-        if t not in found:
-            found.append(t)
+        _add_ticker(found, m)
     return found
 
 
 def extract_strategy_likes(text: str) -> list[str]:
-    return list(dict.fromkeys(_STRATEGY_LIKE_RE.findall(text.lower())))
+    found: list[str] = []
+    for m in _STRATEGY_LIKE_RE.findall(text.lower()):
+        if m not in found:
+            found.append(m)
+    for m in _LABELED_STRATEGY_RE.findall(text):
+        slug = re.sub(r"[\s\-]+", "_", m.strip().lower())
+        slug = re.sub(r"_+", "_", slug).strip("_")
+        if len(slug) >= 3 and slug not in found:
+            found.append(slug)
+    return found
 
 
 def match_catalog_name(text: str, candidates: list[str]) -> str | None:
     lower = text.lower()
+    # "hammer reversal" ↔ hammer_reversal
+    spaced = re.sub(r"[\s\-]+", "_", lower)
+    spaced = re.sub(r"_+", "_", spaced)
     for name in sorted(candidates, key=len, reverse=True):
-        if name.lower() in lower:
+        n = name.lower()
+        if n in lower or n in spaced:
             return name
+        if n.replace("_", " ") in lower:
+            return name
+    # labeled strategy slug first
+    for like in extract_strategy_likes(text):
+        for name in candidates:
+            if name.lower() == like or name.lower().replace("_", "") == like.replace("_", ""):
+                return name
     # fuzzy token match against candidates
-    tokens = set(re.findall(r"[a-z0-9_&]+", lower))
+    tokens = set(re.findall(r"[a-z0-9_&]+", spaced))
     best: str | None = None
     best_score = 0.0
     for name in candidates:
@@ -213,9 +285,13 @@ def parse_user_date(text: str, *, default_year: int | None = None) -> str | None
         return None
     day = int(m.group(1))
     mon = _MONTH[m.group(2).lower()]
-    year = int(m.group(3))
-    if year < 100:
-        year += 2000
+    year_raw = m.group(3)
+    if year_raw:
+        year = int(year_raw)
+        if year < 100:
+            year += 2000
+    else:
+        year = int(default_year or date.today().year)
     try:
         return date(year, mon, day).isoformat()
     except ValueError:

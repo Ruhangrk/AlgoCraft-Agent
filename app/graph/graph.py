@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from app.graph.nodes.compile_loop import compile_loop
 from app.graph.nodes.create_interview import create_interview
@@ -52,7 +53,7 @@ def _route_after_evaluate(state: AgentState) -> Literal["propose", "respond"]:
     return "respond"
 
 
-def build_graph() -> Any:
+def build_graph() -> CompiledStateGraph:
     g: StateGraph = StateGraph(AgentState)
     g.add_node("route", route_intent)
     g.add_node("research", research)
@@ -70,9 +71,9 @@ def build_graph() -> Any:
         "route",
         _route_after_router,
         {
-            "research": "research",
+            "research": "research",    # backtest 
             "discuss": "discuss",
-            "create_interview": "create_interview",
+            "create_interview": "create_interview",  # create strategy
             "respond": "respond",
         },
     )
@@ -96,10 +97,10 @@ def build_graph() -> Any:
     return g.compile()
 
 
-_compiled = None
+_compiled: CompiledStateGraph | None = None
 
 
-def get_graph() -> Any:
+def get_graph() -> CompiledStateGraph:
     global _compiled
     if _compiled is None:
         _compiled = build_graph()
